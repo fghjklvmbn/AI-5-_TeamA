@@ -51,8 +51,8 @@ def tts_generation_wrapper(text, language, speaker, instruct):
         return None, f"오류가 발생했습니다: {str(e)}"
 
 # --- Gradio UI 구성 (Hugging Face Blocks 표준 양식) ---
-with gr.Blocks(title="Qwen3-TTS 1.7B CustomVoice WebUI") as demo:
-    gr.Markdown(f"## 🎙️ Qwen3-TTS-12Hz-1.7B-CustomVoice 플레이그라운드")
+with gr.Blocks(title="Qwen3-TTS 0.6B CustomVoice WebUI") as demo:
+    gr.Markdown(f"## 🎙️ Qwen3-TTS-12Hz-0.6B-CustomVoice 플레이그라운드")
     gr.Markdown("Hugging Face 공식 모델 사양에 맞춘 맞춤형 내장 음색 및 스타일 지정 TTS 인터페이스입니다.")
     
     with gr.Row():
