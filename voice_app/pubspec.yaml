@@ -1,6 +1,5 @@
-name: voice_memory_app
-description: 개인 음성 AI 메모리 앱 - STT-LLM-TTS 파이프라인
-
+name: memoripal
+description: 메모리팔 - 나만의 비밀 친구, 언제나 곁에서 ♡
 publish_to: 'none'
 version: 0.1.0+1
 
@@ -18,59 +17,40 @@ dependencies:
 
   # 네트워크
   dio: ^5.4.0
-  retrofit: ^4.1.0
-  json_annotation: ^4.8.1
+  web_socket_channel: ^2.4.4
 
-  # 로컬 스토리지
-  hive: ^2.2.3
-  hive_flutter: ^1.1.0
+  # 오디오 녹음
+  record: ^5.1.0
+  just_audio: ^0.9.36
+  permission_handler: ^11.3.0
+
+  # 로컬 저장
   shared_preferences: ^2.2.2
-  sqflite: ^2.3.0
   path_provider: ^2.1.2
 
-  # 음성 녹음 / STT
-  record: ^5.1.0
-  flutter_sound: ^9.2.13
-  permission_handler: ^11.3.0
-  just_audio: ^0.9.36
-  audio_waveforms: ^1.0.5
-
   # UI
-  google_fonts: ^6.1.0
   flutter_animate: ^4.5.0
-  lottie: ^3.1.0
-  shimmer: ^3.0.0
-  cached_network_image: ^3.3.1
   flutter_svg: ^2.0.10+1
+  google_fonts: ^6.1.0
+  shimmer: ^3.0.0
+  lottie: ^3.1.0
   gap: ^3.0.1
 
   # 유틸
   intl: ^0.19.0
   uuid: ^4.3.3
   logger: ^2.0.2+1
-  get_it: ^7.6.7
-  injectable: ^2.3.2
-  rxdart: ^0.27.7
-
-  # WebSocket (실시간 파이프라인)
-  web_socket_channel: ^2.4.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
-  build_runner: ^2.4.8
-  json_serializable: ^6.7.1
-  retrofit_generator: ^8.1.0
-  hive_generator: ^2.0.1
-  injectable_generator: ^2.4.1
 
 flutter:
   uses-material-design: true
   assets:
     - assets/images/
-    - assets/icons/
-    - assets/animations/
+    - assets/fonts/
   fonts:
     - family: Pretendard
       fonts:
