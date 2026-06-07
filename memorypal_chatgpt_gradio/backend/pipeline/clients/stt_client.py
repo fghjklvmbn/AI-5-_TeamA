@@ -5,25 +5,40 @@ class STTClient:
 
     def __init__(
         self,
-        server_url
+        host: str,
+        port: int
     ):
-        self.server_url = server_url
+        self.base_url = (
+            f"http://{host}:{port}"
+        )
+
+    def health(self):
+
+        response = requests.get(
+            f"{self.base_url}/health",
+            timeout=10
+        )
+
+        return response.json()
 
     def transcribe(
         self,
-        audio_path
+        audio_path: str
     ):
 
         with open(
             audio_path,
             "rb"
-        ) as audio:
+        ) as audio_file:
 
             response = requests.post(
-                f"{self.server_url}/transcribe",
+                f"{self.base_url}/transcribe",
                 files={
-                    "audio": audio
-                }
+                    "audio": audio_file
+                },
+                timeout=300
             )
+
+        response.raise_for_status()
 
         return response.json()

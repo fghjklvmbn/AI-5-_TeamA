@@ -10,7 +10,7 @@ class PipelineManager:
         self,
         stt_client,
         llm_client,
-        tts_client
+        tts_client=None
     ):
 
         self.stt = stt_client
@@ -19,26 +19,25 @@ class PipelineManager:
 
     def run(
         self,
-        audio_path,
-        voice
+        audio_path
     ):
 
-        stt_result = self.stt.transcribe(
-            audio_path
+        stt_result = (
+            self.stt.transcribe(
+                audio_path
+            )
         )
 
-        llm_result = self.llm.generate(
-            stt_result["text"]
-        )
-
-        tts_result = self.tts.synthesize(
-            llm_result["answer"],
-            voice
+        llm_result = (
+            self.llm.generate(
+                stt_result["text"]
+            )
         )
 
         return {
-            "text":
-            llm_result["answer"],
-            "audio":
-            tts_result["audio_path"]
+            "user_text":
+            stt_result["text"],
+
+            "answer":
+            llm_result["answer"]
         }
