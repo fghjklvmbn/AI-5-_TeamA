@@ -1,44 +1,87 @@
-# frontend/pages/chat/page.py
-
-# import gradio as gr
-
-# history = [
-#     gr.ChatMessage(role="assistant", content="How can I help you?"),
-#     gr.ChatMessage(role="user", content="Can you make me a plot of quarterly sales?"),
-#     gr.ChatMessage(role="assistant", content="I am happy to provide you that report and plot.")
-# ]
-
-# def chat_page():
-
-#     # 구조변경(예시 내용)
-#     chatbot = gr.Chatbot(history)
-
-#     gr.Textbox(
-#         placeholder="메시지 입력"
-#     )
-
-# frontend/pages/chat/page.py
-
 import gradio as gr
+
+from frontend.pages.chat.events import (
+    create_new_session,
+    send_message,
+    select_session
+)
 
 
 def chat_page():
 
-    chatbot = gr.Chatbot(
-        value=[
-            {
-                "role": "assistant",
-                "content": "안녕하세요. MemoryPal입니다."
-            }
+    session_state = gr.State(
+        value=None
+    )
+
+    with gr.Column():
+
+        new_chat_btn = gr.Button(
+            "➕ 새 채팅"
+        )
+
+        session_list = gr.Radio(
+            choices=[],
+            label="채팅 목록"
+        )
+
+        chatbot = gr.Chatbot(
+            value=[],
+            height=550,
+            label="MemoryPal Chat"
+        )
+
+        with gr.Row():
+
+            message = gr.Textbox(
+                placeholder="메시지를 입력하세요...",
+                scale=8
+            )
+
+            send_btn = gr.Button(
+                "전송",
+                scale=1
+            )
+
+    new_chat_btn.click(
+        fn=create_new_session,
+
+        outputs=[
+            session_state,
+            session_list,
+            chatbot
+        ]
+    )
+
+    session_list.change(
+        fn=select_session,
+
+        inputs=session_list,
+
+        outputs=[
+            session_state,
+            chatbot
+        ]
+    )
+
+    send_btn.click(
+        fn=send_message,
+
+        inputs=[
+            message,
+            chatbot,
+            session_state
         ],
-        height=550,
-        label="MemoryPal Chat"
+
+        outputs=[
+            chatbot,
+            message
+        ]
     )
 
-    message = gr.Textbox(
-        placeholder="메시지를 입력하세요..."
+    return (
+        session_state,
+        session_list,
+        chatbot,
+        message,
+        send_btn
     )
-
-    send_btn = gr.Button("전송")
-
-    return chatbot, message, send_btn

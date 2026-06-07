@@ -1,0 +1,67 @@
+import requests
+
+
+class ArchiveClient:
+
+    def __init__(
+        self,
+        host: str,
+        port: int
+    ):
+
+        self.base_url = (
+            f"http://{host}:{port}"
+        )
+
+    def create_session(
+        self,
+        session_name: str
+    ):
+
+        response = requests.post(
+
+            f"{self.base_url}/session",
+
+            json={
+                "session_name":
+                session_name
+            }
+
+        )
+
+        return response.json()
+
+    # 수정
+    def save_conversation(
+        self,
+        payload
+    ):
+
+        response = requests.post(
+            f"{self.base_url}/conversation",
+            json=payload
+        )
+
+        return response.json()
+
+    def get_session_list(
+        self
+    ):
+
+        response = requests.get(
+            f"{self.base_url}/session/list"
+        )
+
+        return response.json()
+
+
+    def get_history(
+        self,
+        session_id
+    ):
+
+        response = requests.get(
+            f"{self.base_url}/conversation/history/{session_id}"
+        )
+
+        return response.json()

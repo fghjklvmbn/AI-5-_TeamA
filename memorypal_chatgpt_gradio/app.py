@@ -3,6 +3,8 @@ import gradio as gr
 from pathlib import Path
 from frontend.pages.home.page import home_page
 from frontend.pages.home.events import (
+    load_session_list,
+    initialize_chat,
     open_recorder,
     save_record
 )
@@ -11,6 +13,10 @@ from frontend.pages.chat.page import chat_page
 from frontend.pages.settings.page import settings_page
 from frontend.pages.voice_manager.page import voice_page
 from pathlib import Path
+
+from frontend.pages.chat.events import (
+    load_session_list
+)
 
 BASE_DIR = Path(__file__).parent
 
@@ -64,7 +70,6 @@ def show_settings():
 with gr.Blocks(title="MemoryPal") as demo:
 
     with gr.Column():
-
         with gr.Column(visible=True) as home_view:
             (
                 mic_btn,
@@ -76,7 +81,13 @@ with gr.Blocks(title="MemoryPal") as demo:
             ) = home_page()
 
         with gr.Column(visible=False) as chat_view:
-            chat_page()
+            (
+                session_state,
+                session_list,
+                chatbot,
+                message,
+                send_btn
+            ) = chat_page()
 
         with gr.Column(visible=False) as voice_view:
             voice_page()
@@ -129,6 +140,17 @@ with gr.Blocks(title="MemoryPal") as demo:
             settings_view
         ]
     )
+
+    demo.load(
+        fn=initialize_chat,
+
+        outputs=[
+            session_state,
+            session_list,
+            chatbot
+        ]
+    )
+
     # 마이크 버튼 클릭
     mic_btn.click(
         fn=open_recorder,
