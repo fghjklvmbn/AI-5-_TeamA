@@ -1,0 +1,25 @@
+/* 일반 스타일 */
+#mic-button{
+    width:200px;
+    height:200px;
+    border-radius:50%;
+    background:#E0E0E0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    margin:auto;
+    font-size:60px;
+    cursor:pointer;
+}
+
+.bottom-nav{
+    position:fixed;
+    bottom:0;
+    width:100%;
+    background:white;
+    border-top:1px solid #ddd;
+}
+
+.nav-btn {
+    flex:1;
+}
