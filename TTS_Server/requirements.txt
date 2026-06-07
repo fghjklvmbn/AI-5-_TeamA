@@ -1,0 +1,12 @@
+torch
+torchaudio
+
+transformers
+accelerate
+
+fastapi
+uvicorn
+
+soundfile
+numpy
+python-multipart
