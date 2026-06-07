@@ -1,25 +1,15 @@
-/* 배경 */
-#mic-button{
-    width:200px;
-    height:200px;
-    border-radius:50%;
-    background:#E0E0E0;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    margin:auto;
-    font-size:60px;
-    cursor:pointer;
+:root {
+    --primary-color: #6B7AFF;
+    --background-color: #F5F6FA;
+    --card-color: #FFFFFF;
 }
 
-.bottom-nav{
-    position:fixed;
-    bottom:0;
-    width:100%;
-    background:white;
-    border-top:1px solid #ddd;
+/* 전체 */
+body {
+    background: var(--background-color);
 }
 
-.nav-btn {
-    flex:1;
+/* 카드 */
+.gr-group {
+    border-radius: 16px !important;
 }

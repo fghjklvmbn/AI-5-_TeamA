@@ -28,7 +28,7 @@ class RecordingService:
 
         shutil.copy(
             audio_path,
-            target
+            target_path
         )
 
         return str(target_path)

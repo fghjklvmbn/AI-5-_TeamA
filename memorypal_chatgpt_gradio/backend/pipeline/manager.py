@@ -1,37 +1,44 @@
 # backend/pipeline/manager.py
+from backend.pipeline.clients.stt_client import STTClient
+from backend.pipeline.clients.llm_client import LLMClient
+from backend.pipeline.clients.tts_client import TTSClient
+
 
 class PipelineManager:
 
     def __init__(
         self,
-        stt,
-        llm,
-        tts
+        stt_client,
+        llm_client,
+        tts_client
     ):
-        self.stt = stt
-        self.llm = llm
-        self.tts = tts
+
+        self.stt = stt_client
+        self.llm = llm_client
+        self.tts = tts_client
 
     def run(
         self,
         audio_path,
-        voice_profile
+        voice
     ):
 
-        text = self.stt.transcribe(
+        stt_result = self.stt.transcribe(
             audio_path
         )
 
         llm_result = self.llm.generate(
-            text
+            stt_result["text"]
         )
 
-        audio_result = self.tts.generate(
-            llm_result,
-            voice_profile
+        tts_result = self.tts.synthesize(
+            llm_result["answer"],
+            voice
         )
 
         return {
-            "text": llm_result,
-            "audio": audio_result
+            "text":
+            llm_result["answer"],
+            "audio":
+            tts_result["audio_path"]
         }

@@ -1,14 +1,8 @@
 from enum import Enum
 
-
 class RecordingState(Enum):
-
-    IDLE = "idle"
-
-    RECORDING = "recording"
-
-    PROCESSING = "processing"
-
-    COMPLETE = "complete"
-
-    ERROR = "error"
+    IDLE = "대기중"
+    RECORDING = "녹음중"
+    PROCESSING = "처리중"
+    COMPLETE = "완료"
+    ERROR = "오류"
