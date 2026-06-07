@@ -9,7 +9,6 @@ class TranscriptionService:
     def transcribe(
         audio_path
     ):
-
         result = model.transcribe(
             audio_path,
             language="ko"
