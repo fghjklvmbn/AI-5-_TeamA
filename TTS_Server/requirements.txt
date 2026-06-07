@@ -1,12 +1,6 @@
-torch
-torchaudio
-
-transformers
-accelerate
-
 fastapi
 uvicorn
-
+# torch
+# transformers
+# accelerate
 soundfile
-numpy
-python-multipart

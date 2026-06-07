@@ -18,4 +18,4 @@ wavs, sr = model.generate_voice_clone(
     ref_audio=ref_audio,
     ref_text=ref_text,
 )
-sf.write("output_voice_clone.wav", wavs[0], sr)
+sf.write("output_voice_clone1.wav", wavs[0], sr)

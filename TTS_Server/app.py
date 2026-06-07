@@ -1,41 +1,27 @@
-from fastapi import FastAPI
-
-from pydantic import BaseModel
-
-from services.synthesis_service import (
-    SynthesisService
+from fastapi import (
+    FastAPI
 )
+
+from routers.tts_router import (
+    router as tts_router
+)
+
+from services.tts_service import (
+    tts_service
+)
+
 
 app = FastAPI()
 
 
-class TTSRequest(
-    BaseModel
-):
+@app.on_event(
+    "startup"
+)
+def startup():
 
-    text: str
-
-
-@app.get("/health")
-def health():
-
-    return {
-        "status": "ok"
-    }
+    tts_service.load_model()
 
 
-@app.post("/synthesize")
-def synthesize(
-    request: TTSRequest
-):
-
-    audio_path = (
-        SynthesisService.synthesize(
-            request.text
-        )
-    )
-
-    return {
-        "audio_path":
-        audio_path
-    }
+app.include_router(
+    tts_router
+)
