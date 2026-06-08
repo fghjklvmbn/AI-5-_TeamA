@@ -5,22 +5,34 @@ class TTSClient:
 
     def __init__(
         self,
-        server_url
+        host,
+        port
     ):
-        self.server_url = server_url
+
+        self.base_url = (
+            f"http://{host}:{port}"
+        )
 
     def synthesize(
         self,
         text,
-        voice
+        ref_audio,
+        ref_text,
+        language="korean"
     ):
 
         response = requests.post(
-            f"{self.server_url}/synthesize",
+
+            f"{self.base_url}/synthesize",
+
             json={
                 "text": text,
-                "voice": voice
+                "ref_audio": ref_audio,
+                "ref_text": ref_text,
+                "language": language
             }
         )
+
+        response.raise_for_status()
 
         return response.json()

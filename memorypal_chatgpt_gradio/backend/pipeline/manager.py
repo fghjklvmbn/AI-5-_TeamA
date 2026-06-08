@@ -41,7 +41,19 @@ class PipelineManager:
         )
 
         # TTS 미구현 상태
-        output_audio_path = None
+
+        tts_result = (
+            self.tts.synthesize(
+
+                llm_result["answer"],
+
+                ref_audio,
+
+                ref_text
+            )
+        )
+        
+        output_audio_path = tts_result
 
         # Archive 저장
         archive_result = (
