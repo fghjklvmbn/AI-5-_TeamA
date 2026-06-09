@@ -4,6 +4,10 @@ import uuid
 import soundfile as sf
 
 from pathlib import Path
+from services.config.tts_config import(
+    TTS_HOST,
+    TTS_PORT
+)
 
 
 class TTSService:
@@ -22,8 +26,8 @@ class TTSService:
             Qwen3TTSModel
             .from_pretrained(
                 "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-                device_map="cuda",
-                dtype=torch.bfloat16,
+                device_map="cpu",
+                dtype=torch.float32,
                 attn_implementation="sdpa"
             )
         )
@@ -76,7 +80,7 @@ class TTSService:
         return {
 
             "audio_path":
-            f"http://localhost:8003/outputs/{filename}"
+            f"http://{TTS_HOST}:{TTS_PORT}/outputs/{filename}"
         }
 
 
