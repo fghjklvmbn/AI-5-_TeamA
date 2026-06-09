@@ -1,5 +1,13 @@
 from fastapi import FastAPI
 
+from schemas.voice_create import (
+    VoiceCreate
+)
+
+from services.voice_service import (
+    VoiceService
+)
+
 from database.postgres import (
     SessionLocal
 )
@@ -188,3 +196,98 @@ def get_session(
         "created_at":
         session.created_at
     }
+
+@app.post("/voice")
+def create_voice(
+    payload: VoiceCreate
+):
+
+    db = SessionLocal()
+
+    voice = (
+        VoiceService.create(
+            db,
+            payload
+        )
+    )
+
+    return {
+
+        "id":
+        voice.id
+    }
+
+@app.get("/voice/list")
+def get_voice_list():
+
+    db = SessionLocal()
+
+    voices = (
+        VoiceService.get_all(
+            db
+        )
+    )
+
+    result = []
+
+    for item in voices:
+
+        result.append({
+
+            "id":
+            item.id,
+
+            "voice_name":
+            item.voice_name,
+
+            "audio_path":
+            item.audio_path,
+
+            "reference_text":
+            item.reference_text,
+
+            "description":
+            item.description
+        })
+
+    return result
+
+@app.get("/voice/{voice_id}")
+def get_voice(
+    voice_id: str
+):
+
+    db = SessionLocal()
+
+    voice = (
+        VoiceService.get_by_id(
+            db,
+            voice_id
+        )
+    )
+
+    if voice is None:
+
+        return {
+            "error":
+            "voice not found"
+        }
+
+    return {
+
+        "id":
+        voice.id,
+
+        "voice_name":
+        voice.voice_name,
+
+        "audio_path":
+        voice.audio_path,
+
+        "reference_text":
+        voice.reference_text,
+
+        "description":
+        voice.description
+    }
+    

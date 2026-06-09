@@ -68,3 +68,32 @@ class Conversation(Base):
     created_at = Column(
         DateTime
     )
+
+class VoiceProfile(Base):
+
+    __tablename__ = "voice_profiles"
+
+    id = Column(
+        String,
+        primary_key=True
+    )
+
+    voice_name = Column(
+        String
+    )
+
+    audio_path = Column(
+        Text
+    )
+
+    reference_text = Column(
+        Text
+    )
+
+    description = Column(
+        Text
+    )
+
+    created_at = Column(
+        DateTime
+    )
