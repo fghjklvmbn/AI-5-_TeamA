@@ -1,4 +1,6 @@
 # stt-server/app.py
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from pathlib import Path
 
