@@ -20,3 +20,12 @@ TTS_HOST = (
 TTS_PORT = (
     8003
 )
+
+# STT 서버
+STT_HOST = (
+    "localhost"
+)
+
+STT_PORT = (
+    8001
+)

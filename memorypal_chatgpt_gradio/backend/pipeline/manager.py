@@ -1,7 +1,8 @@
-# backend/pipeline/manager.py
 from backend.pipeline.clients.stt_client import STTClient
 from backend.pipeline.clients.llm_client import LLMClient
 from backend.pipeline.clients.archive_client import ArchiveClient
+from backend.pipeline.clients.tts_client import TTSClient
+from frontend.config.voice_config import DEFAULT_VOICE
 
 
 class PipelineManager:
@@ -11,7 +12,7 @@ class PipelineManager:
         stt_client,
         llm_client,
         archive_client,
-        tts_client=None
+        tts_client
     ):
 
         self.stt = stt_client
@@ -23,7 +24,7 @@ class PipelineManager:
         self,
         session_id,
         audio_path,
-        voice=None
+        voice
     ):
 
         # STT
@@ -40,20 +41,35 @@ class PipelineManager:
             )
         )
 
-        # TTS 미구현 상태
-
+        if voice == "default":
+            ref_audio = DEFAULT_VOICE["ref_audio"]
+            ref_text = DEFAULT_VOICE["ref_text"]
+        else:
+            voice_profile = (
+                self.archive.get_voice(
+                    voice
+                )
+            )
+            ref_audio = (
+                voice_profile["audio_path"]
+            )
+            ref_text = (
+                voice_profile["reference_text"]
+            )
+        
+        # TTS
         tts_result = (
             self.tts.synthesize(
-
-                llm_result["answer"],
-
-                ref_audio,
-
-                ref_text
+                text=llm_result["answer"],
+                ref_audio=ref_audio,
+                ref_text=ref_text
             )
         )
-        
-        output_audio_path = tts_result
+
+        output_audio_path = (
+            tts_result["audio_path"]
+        )
+
 
         # Archive 저장
         archive_result = (
@@ -75,7 +91,7 @@ class PipelineManager:
                     output_audio_path,
 
                     "voice_id":
-                    None
+                    voice
                 }
             )
         )
@@ -83,7 +99,10 @@ class PipelineManager:
         return {
 
             "conversation_id":
-            archive_result["id"],
+            archive_result.get(
+                "id",
+                None
+            ),
 
             "text":
             llm_result["answer"],
@@ -92,6 +111,8 @@ class PipelineManager:
             output_audio_path
         }
     
+    
+
     def run_text(
         self,
         session_id,
@@ -131,20 +152,88 @@ class PipelineManager:
         return {
 
             "conversation_id":
-            archive_result["id"],
+            archive_result.get(
+                "id",
+                None
+            ),
 
             "text":
             llm_result["answer"]
         }
-        # return {
+    
 
-        #     "conversation_id":
-        #     archive_result.get(
-        #         "id",
-        #         None
-        #     ),
+    def run_text_with_tts(
+        self,
+        session_id,
+        user_text,
+        voice_id
+    ):
 
-        #     "text":
-        #     llm_result["answer"]
-        # }
-        
+        llm_result = (
+            self.llm.generate(
+                user_text
+            )
+        )
+
+        voice_profile = (
+            self.archive.get_voice(
+                voice_id
+            )
+        )
+
+        tts_result = (
+            self.tts.synthesize(
+
+                text=
+                llm_result["answer"],
+
+                ref_audio=
+                voice_profile["audio_path"],
+
+                ref_text=
+                voice_profile["reference_text"]
+            )
+        )
+
+        output_audio_path = (
+            tts_result["audio_path"]
+        )
+
+        archive_result = (
+            self.archive.save_conversation(
+                {
+                    "session_id":
+                    session_id,
+
+                    "user_text":
+                    user_text,
+
+                    "assistant_text":
+                    llm_result["answer"],
+
+                    "input_audio_path":
+                    None,
+
+                    "output_audio_path":
+                    output_audio_path,
+
+                    "voice_id":
+                    voice_id
+                }
+            )
+        )
+
+        return {
+
+            "conversation_id":
+            archive_result.get(
+                "id",
+                None
+            ),
+
+            "text":
+            llm_result["answer"],
+
+            "audio":
+            output_audio_path
+        }

@@ -14,6 +14,12 @@ from backend.api.session_api import (
     create_default_session
 )
 
+from backend.api.chat_api import (
+    pipeline
+)
+
+
+
 def initialize_chat():
 
     session_id = (
@@ -24,17 +30,6 @@ def initialize_chat():
         get_session_list()
     )
 
-    radio = gr.Radio(
-        choices=[
-            (
-                item["session_name"],
-                item["id"]
-            )
-            for item in sessions
-        ],
-        value=session_id
-    )
-
     history = (
         load_history(
             session_id
@@ -43,7 +38,18 @@ def initialize_chat():
 
     return (
         session_id,
-        radio,
+
+        gr.update(
+            choices=[
+                (
+                    item["session_name"],
+                    item["id"]
+                )
+                for item in sessions
+            ],
+            value=session_id
+        ),
+
         history
     )
 
@@ -58,20 +64,20 @@ def create_new_session():
         get_session_list()
     )
 
-    radio = gr.Radio(
-        choices=[
-            (
-                item["session_name"],
-                item["id"]
-            )
-            for item in sessions
-        ],
-        value=session_id
-    )
-
     return (
         session_id,
-        radio,
+
+        gr.update(
+            choices=[
+                (
+                    item["session_name"],
+                    item["id"]
+                )
+                for item in sessions
+            ],
+            value=session_id
+        ),
+
         []
     )
 
@@ -100,20 +106,19 @@ def create_new_session_and_refresh():
         get_session_list()
     )
 
-    radio = gr.Radio(
-        choices=[
-            (
-                item["session_name"],
-                item["id"]
-            )
-            for item in sessions
-        ],
-        value=session_id
-    )
-
     return (
         session_id,
-        radio
+
+        gr.update(
+            choices=[
+                (
+                    item["session_name"],
+                    item["id"]
+                )
+                for item in sessions
+            ],
+            value=session_id
+        )
     )
 
 
@@ -123,7 +128,7 @@ def load_session_list():
         get_session_list()
     )
 
-    return gr.Radio(
+    return gr.update(
         choices=[
             (
                 item["session_name"],
@@ -174,7 +179,8 @@ def load_history(
 def send_message(
     message,
     history,
-    session_id
+    session_id,
+    voice_id
 ):
 
     if not message:
@@ -189,12 +195,22 @@ def send_message(
             create_default_session()
         )
 
-    result = (
-        send_chat(
-            session_id,
-            message
+    if voice_id:
+        result = (
+            pipeline.run_text_with_tts(
+                session_id,
+                message,
+                voice_id
+            )
         )
-    )
+
+    else:
+        result = (
+            send_chat(
+                session_id,
+                message
+            )
+        )
 
     history.append(
         {

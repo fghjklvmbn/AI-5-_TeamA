@@ -3,7 +3,7 @@ import gradio as gr
 from frontend.pages.chat.events import (
     create_new_session,
     send_message,
-    select_session
+    select_session,
 )
 
 
@@ -19,15 +19,20 @@ def chat_page():
             "➕ 새 채팅"
         )
 
-        session_list = gr.Radio(
+        session_list = gr.Dropdown(
             choices=[],
-            label="채팅 목록"
+            label="채팅 목록",
+            interactive=True
         )
 
         chatbot = gr.Chatbot(
             value=[],
             height=550,
             label="MemoryPal Chat"
+        )
+
+        response_audio = gr.Audio(
+            label="음성 응답"
         )
 
         with gr.Row():
@@ -63,25 +68,26 @@ def chat_page():
         ]
     )
 
-    send_btn.click(
-        fn=send_message,
+    # send_btn.click(
+    #     fn=send_message,
 
-        inputs=[
-            message,
-            chatbot,
-            session_state
-        ],
+    #     inputs=[
+    #         message,
+    #         chatbot,
+    #         session_state,
+    #     ],
 
-        outputs=[
-            chatbot,
-            message
-        ]
-    )
+    #     outputs=[
+    #         chatbot,
+    #         message
+    #     ]
+    # )
 
     return (
         session_state,
         session_list,
         chatbot,
         message,
-        send_btn
+        send_btn,
+        response_audio
     )

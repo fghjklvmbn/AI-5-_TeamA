@@ -1,19 +1,42 @@
 /* 전체 */
-
 .gradio-container {
     max-width: 420px !important;
     margin: 0 auto !important;
 }
 
 /* 페이지 */
-
 .page-container {
     min-height: 85vh;
+    padding-bottom: 120px;
 }
 
 /* 상태창 */
-
 .status-box textarea {
     text-align: center;
     font-weight: bold;
+}
+
+
+/* 로딩창 */
+.loader {
+    width: 70px;
+    height: 70px;
+
+    border: 8px solid #ddd;
+    border-top: 8px solid #4CAF50;
+
+    border-radius: 50%;
+
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
 }

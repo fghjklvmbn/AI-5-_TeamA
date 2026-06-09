@@ -65,3 +65,38 @@ class ArchiveClient:
         )
 
         return response.json()
+
+    def create_voice(
+        self,
+        payload
+    ):
+
+        response = requests.post(
+            f"{self.base_url}/voice",
+            json=payload
+        )
+
+        return response.json()
+    
+    def get_voice(
+        self,
+        voice_id
+    ):
+
+        response = requests.get(
+            f"{self.base_url}/voice/{voice_id}"
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+    
+    def get_voice_list(
+        self
+    ):
+
+        response = requests.get(
+            f"{self.base_url}/voice/list"
+        )
+
+        return response.json()

@@ -1,21 +1,32 @@
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+
+sys.path.append(
+    str(ROOT_DIR)
+)
+
 import gradio as gr
 
-from pathlib import Path
 from frontend.pages.home.page import home_page
 from frontend.pages.home.events import (
-    load_session_list,
-    initialize_chat,
     open_recorder,
+    run_voice_chat,
     save_record
 )
 
 from frontend.pages.chat.page import chat_page
+from frontend.pages.chat.events import (
+   initialize_chat,
+   send_message,
+)
+
 from frontend.pages.settings.page import settings_page
 from frontend.pages.voice_manager.page import voice_page
-from pathlib import Path
 
-from frontend.pages.chat.events import (
-    load_session_list
+from frontend.pages.processing.page import (
+    processing_page
 )
 
 BASE_DIR = Path(__file__).parent
@@ -36,7 +47,8 @@ def show_home():
         gr.update(visible=True),
         gr.update(visible=False),
         gr.update(visible=False),
-        gr.update(visible=False)
+        gr.update(visible=False),
+        gr.update(visible=False),
     )
 
 
@@ -45,7 +57,8 @@ def show_chat():
         gr.update(visible=False),
         gr.update(visible=True),
         gr.update(visible=False),
-        gr.update(visible=False)
+        gr.update(visible=False),
+        gr.update(visible=False),
     )
 
 
@@ -54,12 +67,24 @@ def show_voice():
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=True),
-        gr.update(visible=False)
+        gr.update(visible=False),
+        gr.update(visible=False),
     )
 
 
 def show_settings():
     return (
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False),
+        gr.update(visible=True),
+        gr.update(visible=False),
+    )
+
+
+def show_processing():
+    return (
+        gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
         gr.update(visible=False),
@@ -74,10 +99,8 @@ with gr.Blocks(title="MemoryPal") as demo:
             (
                 mic_btn,
                 audio_input,
-                save_btn,
                 voice_selector,
-                home_status,
-                latest_record
+                save_btn
             ) = home_page()
 
         with gr.Column(visible=False) as chat_view:
@@ -86,14 +109,24 @@ with gr.Blocks(title="MemoryPal") as demo:
                 session_list,
                 chatbot,
                 message,
-                send_btn
+                send_btn,
+                response_audio
             ) = chat_page()
 
         with gr.Column(visible=False) as voice_view:
-            voice_page()
+            (
+                voice_state,
+                voice_name,
+                audio_upload,
+                register_btn,
+                voice_list
+            ) = voice_page()
 
         with gr.Column(visible=False) as settings_view:
             settings_page()
+
+        with gr.Column(visible=False) as processing_view:
+            processing_page()
 
         with gr.Row(elem_classes=["bottom-nav"]):
             home_btn = gr.Button("🏠 홈")
@@ -107,7 +140,8 @@ with gr.Blocks(title="MemoryPal") as demo:
             home_view,
             chat_view,
             voice_view,
-            settings_view
+            settings_view,
+            processing_view
         ]
     )
 
@@ -117,7 +151,8 @@ with gr.Blocks(title="MemoryPal") as demo:
             home_view,
             chat_view,
             voice_view,
-            settings_view
+            settings_view,
+            processing_view
         ]
     )
 
@@ -127,7 +162,8 @@ with gr.Blocks(title="MemoryPal") as demo:
             home_view,
             chat_view,
             voice_view,
-            settings_view
+            settings_view,
+            processing_view
         ]
     )
 
@@ -137,7 +173,21 @@ with gr.Blocks(title="MemoryPal") as demo:
             home_view,
             chat_view,
             voice_view,
-            settings_view
+            settings_view,
+            processing_view
+        ]
+    )
+
+    send_btn.click(
+        fn=send_message,
+        inputs=[
+            message,
+            chatbot,
+            session_state
+        ],
+        outputs=[
+            chatbot,
+            message
         ]
     )
 
@@ -156,18 +206,39 @@ with gr.Blocks(title="MemoryPal") as demo:
         fn=open_recorder,
         outputs=[
             audio_input,
-            save_btn,
-            home_status
+            save_btn
         ]
     )
 
     # 저장 버튼 클릭
     save_btn.click(
-        fn=save_record,
-        inputs=audio_input,
+        fn=show_processing,
         outputs=[
-            home_status,
-            latest_record
+            home_view,
+            chat_view,
+            voice_view,
+            settings_view,
+            processing_view
+        ]
+    ).then(
+        fn=run_voice_chat,
+        inputs=[
+            audio_input,
+            session_state,
+            voice_state
+        ],
+        outputs=[
+            chatbot,
+            response_audio
+        ]
+    ).then(
+        fn=show_chat,
+        outputs=[
+            home_view,
+            chat_view,
+            voice_view,
+            settings_view,
+            processing_view
         ]
     )
 
