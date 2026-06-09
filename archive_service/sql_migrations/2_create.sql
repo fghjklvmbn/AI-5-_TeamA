@@ -35,6 +35,9 @@ CREATE TABLE voice_profiles (
     audio_path TEXT
     NOT NULL,
 
+    reference_text TEXT
+    NOT NULL,
+
     description TEXT,
 
     created_at TIMESTAMP
