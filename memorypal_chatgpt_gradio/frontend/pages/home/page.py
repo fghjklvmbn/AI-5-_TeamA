@@ -28,9 +28,10 @@ def home_page():
         )
 
         voice_selector = gr.Dropdown(
+            label="응답 음성",
             choices=VoiceService.get_voice_choices(),
-            value="default",
-            label="음성 선택"
+            value="00000000-0000-0000-0000-000000000001",
+            interactive=True
         )
 
         # 파이프라인 연결점. 채팅으로 바꿈

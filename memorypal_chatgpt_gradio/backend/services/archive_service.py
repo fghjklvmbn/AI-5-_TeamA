@@ -1,10 +1,6 @@
 import requests
 
-
-ARCHIVE_URL = (
-    "http://localhost:8004"
-)
-
+from backend.configs.service_config import ARCHIVE_HOST
 
 class ArchiveService:
 
@@ -14,7 +10,7 @@ class ArchiveService:
     ):
 
         response = requests.post(
-            f"{ARCHIVE_URL}/voice",
+            f"http://{ARCHIVE_HOST}/voice",
             json=payload
         )
 
@@ -26,7 +22,7 @@ class ArchiveService:
     def get_voice_list():
 
         response = requests.get(
-            f"{ARCHIVE_URL}/voice/list"
+            f"http://{ARCHIVE_HOST}/voice/list"
         )
 
         response.raise_for_status()
@@ -39,7 +35,7 @@ class ArchiveService:
     ):
 
         response = requests.get(
-            f"{ARCHIVE_URL}/voice/{voice_id}"
+            f"http://{ARCHIVE_HOST}/voice/{voice_id}"
         )
 
         response.raise_for_status()

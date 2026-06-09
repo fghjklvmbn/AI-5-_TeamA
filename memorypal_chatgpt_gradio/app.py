@@ -109,6 +109,7 @@ with gr.Blocks(title="MemoryPal") as demo:
                 session_list,
                 chatbot,
                 message,
+                message_selector,
                 send_btn,
                 response_audio
             ) = chat_page()
@@ -197,7 +198,9 @@ with gr.Blocks(title="MemoryPal") as demo:
         outputs=[
             session_state,
             session_list,
-            chatbot
+            chatbot,
+            response_audio,
+            message_selector
         ]
     )
 

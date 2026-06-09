@@ -1,10 +1,6 @@
 import requests
 
-
-STT_URL = (
-    "http://localhost:8001"
-)
-
+from backend.configs.service_config import STT_HOST
 
 class STTService:
 
@@ -20,7 +16,7 @@ class STTService:
 
             response = requests.post(
 
-                f"{STT_URL}/transcribe",
+                f"http://{STT_HOST}/transcribe",
 
                 files={
                     "audio": f

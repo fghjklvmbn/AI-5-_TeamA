@@ -1,12 +1,13 @@
 # frontend/pages/home/events.py
 
 import gradio as gr
-
+import requests
 from backend.models.recoding_state import RecordingState
 from backend.services.recording_service import RecordingService
 from backend.api.chat_api import (
     pipeline
 )
+import uuid
 
 def open_recorder():
 
@@ -42,7 +43,7 @@ def run_voice_chat(
     voice_id
 ):
     if not voice_id :
-        voice_id = "default"  
+        voice_id = "00000000-0000-0000-0000-000000000001"  
     
     print("audio_path =", audio_path)
     print("session_id =", session_id)
@@ -61,6 +62,27 @@ def run_voice_chat(
         )
     )
 
+    audio_url = (
+        result["audio"]
+    )
+
+    local_audio = (
+        f"temp_{uuid.uuid4()}.wav"
+    )
+
+    response = requests.get(
+        audio_url
+    )
+
+    with open(
+        local_audio,
+        "wb"
+    ) as f:
+
+        f.write(
+            response.content
+        )
+
     history = [
 
         {
@@ -74,7 +96,9 @@ def run_voice_chat(
         }
     ]
 
+    print("run_voice_chat 종료")
+    
     return (
         history,
-        result["audio"]
+        local_audio
     )

@@ -1,4 +1,6 @@
 import gradio as gr
+import uuid
+import requests
 
 from backend.api.session_api import (
     create_session,
@@ -30,7 +32,7 @@ def initialize_chat():
         get_session_list()
     )
 
-    history = (
+    history, audio_path, audio_choices = (
         load_history(
             session_id
         )
@@ -50,7 +52,11 @@ def initialize_chat():
             value=session_id
         ),
 
-        history
+        history,
+        audio_path,
+        gr.update(
+            choices=audio_choices
+        )
     )
 
 
@@ -85,16 +91,50 @@ def select_session(
     session_id
 ):
 
-    history = (
+    history, audio_url, audio_choices = (
         load_history(
             session_id
         )
     )
 
+    local_audio = None
+
+    if audio_url:
+
+        local_audio = (
+            f"history_{uuid.uuid4()}.wav"
+        )
+
+        response = (
+            requests.get(
+                audio_url
+            )
+        )
+
+        with open(
+            local_audio,
+            "wb"
+        ) as f:
+
+            f.write(
+                response.content
+            )
+
     return (
         session_id,
-        history
+        history,
+        local_audio,
+        gr.update(
+            choices=audio_choices
+        )
     )
+
+
+def select_message(
+    audio_path
+):
+    return audio_path
+
 
 def create_new_session_and_refresh():
 
@@ -144,8 +184,7 @@ def load_history(
 ):
 
     if not session_id:
-
-        return []
+        return [], None
 
     conversations = (
         get_history(
@@ -154,6 +193,9 @@ def load_history(
     )
 
     messages = []
+    audio_choices = []
+
+    last_audio = None
 
     for item in conversations:
 
@@ -173,7 +215,26 @@ def load_history(
             }
         )
 
-    return messages
+        if item.get(
+            "output_audio_path"
+        ):
+
+            last_audio = (
+                item["output_audio_path"]
+            )
+
+            audio_choices.append(
+                (
+                    item["assistant_text"][:5],
+                    item["output_audio_path"]
+                )
+            )
+
+    return (
+        messages,
+        last_audio,
+        audio_choices
+    )
 
 
 def send_message(

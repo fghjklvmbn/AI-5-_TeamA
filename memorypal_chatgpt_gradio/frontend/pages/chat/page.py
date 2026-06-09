@@ -2,8 +2,8 @@ import gradio as gr
 
 from frontend.pages.chat.events import (
     create_new_session,
-    send_message,
     select_session,
+    select_message
 )
 
 
@@ -33,6 +33,11 @@ def chat_page():
 
         response_audio = gr.Audio(
             label="음성 응답"
+        )
+        message_selector = gr.Dropdown(
+            label="이전 음성 응답",
+            choices=[],
+            interactive=True
         )
 
         with gr.Row():
@@ -64,10 +69,19 @@ def chat_page():
 
         outputs=[
             session_state,
-            chatbot
+            chatbot,
+            response_audio,
+            message_selector
         ]
     )
 
+    message_selector.change(
+        fn=select_message,
+
+        inputs=message_selector,
+
+        outputs=response_audio
+    )
     # send_btn.click(
     #     fn=send_message,
 
@@ -87,6 +101,7 @@ def chat_page():
         session_state,
         session_list,
         chatbot,
+        message_selector,
         message,
         send_btn,
         response_audio

@@ -41,21 +41,19 @@ class PipelineManager:
             )
         )
 
-        if voice == "default":
-            ref_audio = DEFAULT_VOICE["ref_audio"]
-            ref_text = DEFAULT_VOICE["ref_text"]
-        else:
-            voice_profile = (
-                self.archive.get_voice(
-                    voice
-                )
+        voice_profile = (
+            self.archive.get_voice(
+                voice
             )
-            ref_audio = (
-                voice_profile["audio_path"]
-            )
-            ref_text = (
-                voice_profile["reference_text"]
-            )
+        )
+
+        ref_audio = (
+            voice_profile["audio_path"]
+        )
+        
+        ref_text = (
+            voice_profile["reference_text"]
+        )
         
         # TTS
         tts_result = (

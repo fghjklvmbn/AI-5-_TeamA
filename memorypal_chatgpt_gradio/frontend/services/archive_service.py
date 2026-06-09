@@ -1,8 +1,8 @@
 import requests
 
-
-ARCHIVE_URL = (
-    "http://localhost:8004"
+from backend.configs.service_config import (
+    ARCHIVE_HOST,
+    ARCHIVE_PORT
 )
 
 
@@ -13,7 +13,7 @@ class ArchiveService:
         voice_id
     ):
         response = requests.get(
-            f"{ARCHIVE_URL}/voice/{voice_id}"
+            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/voice/{voice_id}"
         )
 
         response.raise_for_status()
@@ -26,7 +26,7 @@ class ArchiveService:
     ):
 
         response = requests.post(
-            f"{ARCHIVE_URL}/voice",
+            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/voice",
             json=payload
         )
 
@@ -38,7 +38,7 @@ class ArchiveService:
     def get_voice_list():
 
         response = requests.get(
-            f"{ARCHIVE_URL}/voice/list"
+            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/voice/list"
         )
 
         response.raise_for_status()
@@ -51,7 +51,7 @@ class ArchiveService:
     ):
 
         response = requests.post(
-            f"{ARCHIVE_URL}/session",
+            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/session",
             json={
                 "session_name":
                 session_name
@@ -64,7 +64,7 @@ class ArchiveService:
     def get_session_list():
 
         response = requests.get(
-            f"{ARCHIVE_URL}/session/list"
+            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/session/list"
         )
 
         return response.json()
@@ -75,7 +75,7 @@ class ArchiveService:
     ):
 
         response = requests.get(
-            f"{ARCHIVE_URL}/conversation/history/{session_id}"
+            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/conversation/history/{session_id}"
         )
 
         return response.json()
