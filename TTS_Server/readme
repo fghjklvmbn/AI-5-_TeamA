@@ -16,3 +16,9 @@ pip install -e .
 
 엔비디아 제품군일경우
 pip install -U flash-attn --no-build-isolation
+
+
+TTS port : 8003
+
+서버 실행 명령어
+uvicorn app:app --reload --port 8003
