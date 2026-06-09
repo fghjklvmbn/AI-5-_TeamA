@@ -1,6 +1,6 @@
 # LLM 서버
 LLM_BASE_URL = (
-    "http://192.168.2.41:1234/v1"
+    "http://developark.duckdns.org/memoripal/llm/v1"
 )
 
 # 저장서버
@@ -14,7 +14,7 @@ ARCHIVE_PORT = (
 
 # TTS 서버
 TTS_HOST = (
-    "localhost"
+    "http://192.168.0.206"
 )
 
 TTS_PORT = (
@@ -23,7 +23,7 @@ TTS_PORT = (
 
 # STT 서버
 STT_HOST = (
-    "localhost"
+    "http://192.168.0.217"
 )
 
 STT_PORT = (
