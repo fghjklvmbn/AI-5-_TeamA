@@ -69,9 +69,14 @@ class TTSService:
             sr
         )
 
+        filename = (
+            output_path.name
+        )
+
         return {
+
             "audio_path":
-            str(output_path)
+            f"http://localhost:8003/outputs/{filename}"
         }
 
 
