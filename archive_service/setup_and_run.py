@@ -107,11 +107,11 @@ def main():
     run_command(f'"{sys.executable}" -m pip install -r requirements.txt')
 
     # 3. STT 서버 실행 (Uvicorn)
-    print("\n🌐 Uvicorn STT 서버를 구동합니다... (Port: 8001)")
+    print("\n🌐 Uvicorn archive 서버를 구동합니다... (Port: 8004)")
 
     # 가상환경 내 uvicorn 실행을 안전하게 지원하기 위해 python -m uvicorn 형태로 실행
     try:
-        run_command(f'"{sys.executable}" -m uvicorn app:app --reload --host 0.0.0.0 --port 8001')
+        run_command(f'"{sys.executable}" -m uvicorn app:app --reload --host 0.0.0.0 --port 8004')
     except:
         print("프로그램이 종료되었습니다.")
         return 0
