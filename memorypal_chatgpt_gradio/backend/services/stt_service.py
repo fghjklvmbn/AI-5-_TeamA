@@ -1,6 +1,6 @@
 import requests
 
-from backend.configs.service_config import STT_HOST
+from backend.configs.service_config import STT_HOST, STT_PORT
 
 class STTService:
 
@@ -16,7 +16,7 @@ class STTService:
 
             response = requests.post(
 
-                f"http://{STT_HOST}/transcribe",
+                f"http://{STT_HOST}:{STT_PORT}/transcribe",
 
                 files={
                     "audio": f

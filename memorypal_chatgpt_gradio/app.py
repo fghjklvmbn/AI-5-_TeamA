@@ -12,8 +12,7 @@ import gradio as gr
 from frontend.pages.home.page import home_page
 from frontend.pages.home.events import (
     open_recorder,
-    run_voice_chat,
-    save_record
+    run_voice_chat
 )
 
 from frontend.pages.chat.page import chat_page
@@ -109,7 +108,6 @@ with gr.Blocks(title="MemoryPal") as demo:
                 session_list,
                 chatbot,
                 message,
-                message_selector,
                 send_btn,
                 response_audio
             ) = chat_page()
@@ -199,8 +197,7 @@ with gr.Blocks(title="MemoryPal") as demo:
             session_state,
             session_list,
             chatbot,
-            response_audio,
-            message_selector
+            response_audio
         ]
     )
 

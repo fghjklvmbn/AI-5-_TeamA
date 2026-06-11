@@ -32,7 +32,7 @@ def initialize_chat():
         get_session_list()
     )
 
-    history, audio_path, audio_choices = (
+    history, audio_path = (
         load_history(
             session_id
         )
@@ -53,10 +53,7 @@ def initialize_chat():
         ),
 
         history,
-        audio_path,
-        gr.update(
-            choices=audio_choices
-        )
+        audio_path
     )
 
 
@@ -91,7 +88,7 @@ def select_session(
     session_id
 ):
 
-    history, audio_url, audio_choices = (
+    history, audio_url = (
         load_history(
             session_id
         )
@@ -102,7 +99,7 @@ def select_session(
     if audio_url:
 
         local_audio = (
-            f"history_{uuid.uuid4()}.wav"
+            f"storage/history/history_{uuid.uuid4()}.wav"
         )
 
         response = (
@@ -124,16 +121,7 @@ def select_session(
         session_id,
         history,
         local_audio,
-        gr.update(
-            choices=audio_choices
-        )
     )
-
-
-def select_message(
-    audio_path
-):
-    return audio_path
 
 
 def create_new_session_and_refresh():
@@ -193,7 +181,6 @@ def load_history(
     )
 
     messages = []
-    audio_choices = []
 
     last_audio = None
 
@@ -223,17 +210,9 @@ def load_history(
                 item["output_audio_path"]
             )
 
-            audio_choices.append(
-                (
-                    item["assistant_text"][:5],
-                    item["output_audio_path"]
-                )
-            )
-
     return (
         messages,
-        last_audio,
-        audio_choices
+        last_audio
     )
 
 
