@@ -2,6 +2,48 @@ import platform
 import subprocess
 import sys
 
+# 콘다 환경 체크
+def check_conda_env(env_name):
+    try:
+        # 'conda env list' 명령어를 실행하여 출력 결과를 가져옵니다.
+        result = subprocess.run('conda env list', shell=True, capture_output=True, text=True, check=True)
+        
+        # 출력 결과물(텍스트)에서 내가 찾는 환경 이름이 있는지 검사합니다.
+        # 공백이나 경로 구분을 위해 이름 앞뒤를 고려하여 검사하는 것이 안전합니다.
+        lines = result.stdout.splitlines()
+        for line in lines:
+            if line.strip() and not line.startswith('#'):
+                # 각 행의 첫 번째 단어가 환경 이름입니다.
+                existing_env = line.split()[0]
+                if existing_env == env_name:
+                    return True
+        return False
+    except FileNotFoundError:
+        print("에러: 시스템에 conda가 설치되어 있지 않거나 PATH가 설정되지 않았습니다.")
+        return False
+    except subprocess.CalledProcessError:
+        print("에러: conda env list 명령어를 실행하지 못했습니다.")
+        return False
+        
+# 아나콘다 설치 체크
+def check_anaconda():
+    try:
+        # 'conda env list' 명령어를 실행하여 출력 결과를 가져옵니다.
+        result = subprocess.run('conda --version', shell=True, capture_output=True, text=True, check=True)
+        
+        # 출력 결과물(텍스트)에서 내가 찾는 환경 이름이 있는지 검사합니다.
+        # 공백이나 경로 구분을 위해 이름 앞뒤를 고려하여 검사하는 것이 안전합니다.
+        if "conda" in result.stdout:
+            return True
+        return False
+    
+    except FileNotFoundError:
+        print("에러: 시스템에 conda가 설치되어 있지 않거나 PATH가 설정되지 않았습니다.")
+        print("만약 시스템에 anaconda가 설치하지 않았다면 https://www.anaconda.com/download/success?reg=skipped 링크로 이동하여 설치해주시기 바랍니다.")
+        return False
+    except subprocess.CalledProcessError:
+        print("에러: conda env list 명령어를 실행하지 못했습니다.")
+        return False
 
 def run_command(command, shell=True):
     """명령어를 실행하고 에러가 발생하면 프로그램을 중단하는 함수"""
@@ -41,12 +83,25 @@ def main():
     os_type = platform.system()
     print(f"💻 감지된 운영체제: {os_type}")
 
-    # 0. 환경생성(STT)(현재 사용자가 "kjca"인 경우 건너뛰기)
+    # 0. 환경생성 및 체크(STT)(현재 사용자가 "kjca"인 경우 건너뛰기)
     if platform.uname().node == "kjca":
         pass
     else:
-        run_command(f'conda create -n TTS python=3.12 -y')
-        run_command(f'conda activate TTS')
+        if check_anaconda():
+            print("아나콘다가 설치되어 있습니다.")
+        else:
+            return 0
+        
+        target_env = "STT"
+
+        if check_conda_env(target_env):
+            print(f"[{target_env}] 환경이 이미 존재하므로 이후 코드를 건너뜁니다.")
+        else:
+            print(f"[{target_env}] 환경이 없습니다. 새로 생성을 시작합니다...")
+            run_command(command="conda create -n STT python=3.12 -y")
+            
+        # 가상환경 실행
+        run_command(command="conda activate STT")
 
     # 1. ffmpeg 체크 및 설치(현재 사용자가 "kjca"인 경우 건너뛰기)
     if platform.uname().node == "kjca":
