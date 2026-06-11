@@ -99,7 +99,7 @@ def main():
         print(f"[{target_env}] 환경이 이미 존재하므로 이후 코드를 건너뜁니다.")
     else:
         print(f"[{target_env}] 환경이 없습니다. 새로 생성을 시작합니다...")
-        run_command(command="conda create -n qwen3-tts python=3.12")
+        run_command(command="conda create -n qwen3-tts python=3.12 -y")
         
     # 가상환경 실행
     run_command(command="conda activate qwen3-tts")
