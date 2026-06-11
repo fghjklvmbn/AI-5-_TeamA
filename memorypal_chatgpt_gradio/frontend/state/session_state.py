@@ -1,0 +1,1 @@
+CURRENT_SESSION_ID = None
