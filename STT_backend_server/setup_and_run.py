@@ -1,8 +1,7 @@
-import os
 import platform
 import subprocess
 import sys
-from pathlib import Path
+
 
 def run_command(command, shell=True):
     """명령어를 실행하고 에러가 발생하면 프로그램을 중단하는 함수"""
@@ -42,14 +41,14 @@ def main():
     os_type = platform.system()
     print(f"💻 감지된 운영체제: {os_type}")
 
-    # 0. 환경생성(TTS)(현재 사용자가 "Administrator"인 경우 건너뛰기)
+    # 0. 환경생성(STT)(현재 사용자가 "kjca"인 경우 건너뛰기)
     if platform.uname().node == "kjca":
         pass
     else:
         run_command(f'conda create -n TTS python=3.12 -y')
         run_command(f'conda activate TTS')
 
-    # 1. ffmpeg 체크 및 설치(현재 사용자가 "Administrator"인 경우 건너뛰기)
+    # 1. ffmpeg 체크 및 설치(현재 사용자가 "kjca"인 경우 건너뛰기)
     if platform.uname().node == "kjca":
         pass
     else:
@@ -65,11 +64,15 @@ def main():
     else :
         run_command(f'"{sys.executable}" -m pip install -r requirements.txt')
 
-    # 4. TTS 서버 실행 (Uvicorn)
-    print("\n🌐 Uvicorn TTS 서버를 구동합니다... (Port: 8001)")
+    # 3. STT 서버 실행 (Uvicorn)
+    print("\n🌐 Uvicorn STT 서버를 구동합니다... (Port: 8001)")
 
     # 가상환경 내 uvicorn 실행을 안전하게 지원하기 위해 python -m uvicorn 형태로 실행
-    run_command(f'"{sys.executable}" -m uvicorn app:app --reload --host 0.0.0.0 --port 8001')
+    try:
+        run_command(f'"{sys.executable}" -m uvicorn app:app --reload --host 0.0.0.0 --port 8001')
+    except:
+        print("프로그램이 종료되었습니다.")
+        return 0
 
 if __name__ == "__main__":
     main()
