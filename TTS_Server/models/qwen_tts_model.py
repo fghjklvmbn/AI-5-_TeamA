@@ -33,8 +33,8 @@ class QwenTTSModel:
         cls._model = (
             AutoModel.from_pretrained(
                 MODEL_NAME,
-                torch_dtype="auto",
-                device_map="auto"
+                torch_dtype=torch.bfloat16,
+                device_map="cuda:0"
             )
         )
 
