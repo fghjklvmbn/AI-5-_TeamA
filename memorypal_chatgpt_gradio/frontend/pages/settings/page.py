@@ -18,3 +18,10 @@ def settings_page():
         value=1.0,
         label="피치"
     )
+
+    gr.Slider(
+        minimum=0.5,
+        maximum=5.0,
+        value=1.0,
+        label="발화속도"
+    )

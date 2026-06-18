@@ -10,7 +10,7 @@ class ArchiveService:
     ):
 
         response = requests.post(
-            f"http://{ARCHIVE_HOST}/voice",
+            f"{ARCHIVE_HOST}/voice",
             json=payload
         )
 
@@ -22,7 +22,7 @@ class ArchiveService:
     def get_voice_list():
 
         response = requests.get(
-            f"http://{ARCHIVE_HOST}/voice/list"
+            f"{ARCHIVE_HOST}/voice/list"
         )
 
         response.raise_for_status()
@@ -35,7 +35,7 @@ class ArchiveService:
     ):
 
         response = requests.get(
-            f"http://{ARCHIVE_HOST}/voice/{voice_id}"
+            f"{ARCHIVE_HOST}/voice/{voice_id}"
         )
 
         response.raise_for_status()

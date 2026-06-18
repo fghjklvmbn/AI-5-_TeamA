@@ -33,8 +33,7 @@ from backend.configs.service_config import (
 
 
 archive_client = ArchiveClient(
-    ARCHIVE_HOST,
-    ARCHIVE_PORT
+    ARCHIVE_HOST
 )
 
 llm_client = LLMClient(

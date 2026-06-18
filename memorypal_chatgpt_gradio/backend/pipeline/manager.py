@@ -46,6 +46,7 @@ class PipelineManager:
                 voice
             )
         )
+        print(voice_profile)
 
         ref_audio = (
             voice_profile["audio_path"]
@@ -178,6 +179,7 @@ class PipelineManager:
                 voice_id
             )
         )
+        print("voice_profile =", voice_profile)
 
         tts_result = (
             self.tts.synthesize(

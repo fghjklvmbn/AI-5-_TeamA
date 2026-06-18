@@ -182,7 +182,8 @@ with gr.Blocks(title="MemoryPal") as demo:
         inputs=[
             message,
             chatbot,
-            session_state
+            session_state,
+            voice_selector
         ],
         outputs=[
             chatbot,
@@ -225,7 +226,7 @@ with gr.Blocks(title="MemoryPal") as demo:
         inputs=[
             audio_input,
             session_state,
-            voice_state
+            voice_selector
         ],
         outputs=[
             chatbot,
@@ -244,5 +245,7 @@ with gr.Blocks(title="MemoryPal") as demo:
 
 demo.launch(
     css=CSS,
+    server_name="0.0.0.0",
+    server_port=7860,
     share=True
 )

@@ -2,9 +2,10 @@ from backend.pipeline.clients.archive_client import (
     ArchiveClient
 )
 
+from backend.configs.service_config import ARCHIVE_HOST
+
 archive_client = ArchiveClient(
-    "localhost",
-    8004
+    ARCHIVE_HOST
 )
 
 

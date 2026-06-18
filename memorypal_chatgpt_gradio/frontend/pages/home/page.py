@@ -30,7 +30,6 @@ def home_page():
         voice_selector = gr.Dropdown(
             label="응답 음성",
             choices=VoiceService.get_voice_choices(),
-            value="00000000-0000-0000-0000-000000000001",
             interactive=True
         )
 

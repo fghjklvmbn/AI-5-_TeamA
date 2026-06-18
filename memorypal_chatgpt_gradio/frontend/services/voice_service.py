@@ -12,20 +12,10 @@ class VoiceService:
             ArchiveService.get_voice_list()
         )
 
-        choices = [
+        return [
             (
-                "기본 음성",
-                "00000000-0000-0000-0000-000000000001"
+                voice["voice_name"],
+                voice["id"]
             )
-        ]
-
-        for voice in voices:
-
-            choices.append(
-                (
-                    voice["voice_name"],
-                    voice["id"]
-                )
-            )
-
-        return choices
+            for voice in voices
+            ]

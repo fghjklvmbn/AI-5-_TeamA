@@ -5,12 +5,11 @@ class ArchiveClient:
 
     def __init__(
         self,
-        host: str,
-        port: int
+        host: str
     ):
 
         self.base_url = (
-            f"http://{host}:{port}"
+            f"{host}"
         )
 
     def create_session(

@@ -21,17 +21,13 @@ from backend.pipeline.clients.stt_client import (
 from backend.configs.service_config import (
     LLM_BASE_URL,
     ARCHIVE_HOST,
-    ARCHIVE_PORT,
     TTS_HOST,
-    TTS_PORT,
-    STT_HOST,
-    STT_PORT
+    STT_HOST
 )
 
 
 archive_client = ArchiveClient(
-    ARCHIVE_HOST,
-    ARCHIVE_PORT
+    ARCHIVE_HOST
 )
 
 llm_client = LLMClient(
@@ -39,13 +35,11 @@ llm_client = LLMClient(
 )
 
 tts_client = TTSClient(
-    TTS_HOST,
-    TTS_PORT
+    TTS_HOST
 )
 
 stt_client = STTClient(
-    STT_HOST,
-    STT_PORT
+    STT_HOST
 )
 
 pipeline = PipelineManager(

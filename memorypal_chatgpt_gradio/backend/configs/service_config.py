@@ -1,31 +1,19 @@
 # LLM 서버
 LLM_BASE_URL = (
-    "https://developark.duckdns.org/memoripal/llm/v1"
+    "https://developark.duckdns.org/api_memoripal/llm/v1"
 )
 
 # 저장서버
 ARCHIVE_HOST = (
-    "localhost"
-)
-
-ARCHIVE_PORT = (
-    8004
+    "https://developark.duckdns.org/api_memoripal/archive"
 )
 
 # TTS 서버
 TTS_HOST = (
-    "192.168.0.217"
-)
-
-TTS_PORT = (
-    8003
+    "https://developark.duckdns.org/api_memoripal/tts"
 )
 
 # STT 서버
 STT_HOST = (
-    "192.168.0.206"
-)
-
-STT_PORT = (
-    8001
+    "https://developark.duckdns.org/api_memoripal/stt"
 )

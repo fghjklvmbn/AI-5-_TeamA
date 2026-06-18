@@ -7,7 +7,11 @@ from backend.services.recording_service import RecordingService
 from backend.api.chat_api import (
     pipeline
 )
+from backend.api.session_api import (
+    create_default_session
+)
 import uuid
+from frontend.services.archive_service import ArchiveService
 
 def open_recorder():
 
@@ -41,23 +45,40 @@ def run_voice_chat(
     audio_path,
     session_id,
     voice_id
-):
-    if not voice_id :
-        voice_id = "00000000-0000-0000-0000-000000000001"  
-    
-    print("audio_path =", audio_path)
-    print("session_id =", session_id)
-    print("voice_id =", voice_id)
-    
+):  
+    print(voice_id)
+    if not session_id:
+        session_id = (
+            create_default_session()
+        )
+
+    uploaded = (
+        ArchiveService.upload_audio(
+            audio_path
+        )
+    )
+
+    if not session_id:
+        session_id = (
+            create_default_session()
+        )
+
     if not audio_path:
         raise Exception(
             "audio_path is None"
         )
+    
+    if not voice_id :
+        voice_id = "00000000-0000-0000-0000-000000000001"
+    
+    print("audio_path =", audio_path)
+    print("session_id =", session_id)
+    print("voice_id =", voice_id)
 
     result = (
         pipeline.run(
             session_id=session_id,
-            audio_path=audio_path,
+            audio_path=uploaded["audio_url"],
             voice=voice_id
         )
     )
@@ -65,9 +86,10 @@ def run_voice_chat(
     audio_url = (
         result["audio"]
     )
+    
 
     local_audio = (
-        f"temp_{uuid.uuid4()}.wav"
+        f"storage/history/temp_{uuid.uuid4()}.wav"
     )
 
     response = requests.get(

@@ -5,12 +5,11 @@ class TTSClient:
 
     def __init__(
         self,
-        host,
-        port
+        host
     ):
 
         self.base_url = (
-            f"http://{host}:{port}"
+            f"{host}"
         )
 
     def synthesize(

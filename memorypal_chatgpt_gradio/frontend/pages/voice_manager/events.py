@@ -33,13 +33,19 @@ def register_voice(
         )
     )
 
+    uploaded = (
+        ArchiveService.upload_audio(
+            audio_path
+        )
+    )
+
     payload = {
 
         "voice_name":
         voice_name,
 
         "audio_path":
-        audio_path,
+        uploaded["audio_url"],
 
         "reference_text":
         stt_result["text"],

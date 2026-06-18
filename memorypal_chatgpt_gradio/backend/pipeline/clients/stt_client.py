@@ -1,15 +1,16 @@
 import requests
+import tempfile
 
+from backend.configs.service_config import STT_HOST
 
 class STTClient:
 
     def __init__(
         self,
-        host: str,
-        port: int
+        host: str
     ):
         self.base_url = (
-            f"http://{host}:{port}"
+            f"{host}"
         )
 
     def health(self):
@@ -21,22 +22,55 @@ class STTClient:
 
         return response.json()
 
+    @staticmethod
     def transcribe(
-        self,
-        audio_path: str
+        audio_source
     ):
+
+        if audio_source.startswith(
+            "http"
+        ):
+
+            response = (
+                requests.get(
+                    audio_source,
+                    timeout=30
+                )
+            )
+
+            response.raise_for_status()
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".wav",
+                delete=False
+            ) as tmp:
+
+                tmp.write(
+                    response.content
+                )
+
+                audio_path = (
+                    tmp.name
+                )
+
+        else:
+
+            audio_path = (
+                audio_source
+            )
 
         with open(
             audio_path,
             "rb"
-        ) as audio_file:
+        ) as f:
 
             response = requests.post(
-                f"{self.base_url}/transcribe",
+
+                f"{STT_HOST}/transcribe",
+
                 files={
-                    "audio": audio_file
-                },
-                timeout=300
+                    "audio": f
+                }
             )
 
         response.raise_for_status()

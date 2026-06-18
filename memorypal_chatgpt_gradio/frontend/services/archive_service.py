@@ -1,8 +1,7 @@
 import requests
 
 from backend.configs.service_config import (
-    ARCHIVE_HOST,
-    ARCHIVE_PORT
+    ARCHIVE_HOST
 )
 
 
@@ -13,7 +12,7 @@ class ArchiveService:
         voice_id
     ):
         response = requests.get(
-            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/voice/{voice_id}"
+            f"{ARCHIVE_HOST}/voice/{voice_id}"
         )
 
         response.raise_for_status()
@@ -26,7 +25,7 @@ class ArchiveService:
     ):
 
         response = requests.post(
-            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/voice",
+            f"{ARCHIVE_HOST}/voice",
             json=payload
         )
 
@@ -38,7 +37,7 @@ class ArchiveService:
     def get_voice_list():
 
         response = requests.get(
-            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/voice/list"
+            f"{ARCHIVE_HOST}/voice/list"
         )
 
         response.raise_for_status()
@@ -51,7 +50,7 @@ class ArchiveService:
     ):
 
         response = requests.post(
-            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/session",
+            f"{ARCHIVE_HOST}/session",
             json={
                 "session_name":
                 session_name
@@ -64,7 +63,7 @@ class ArchiveService:
     def get_session_list():
 
         response = requests.get(
-            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/session/list"
+            f"{ARCHIVE_HOST}/session/list"
         )
 
         return response.json()
@@ -75,7 +74,27 @@ class ArchiveService:
     ):
 
         response = requests.get(
-            f"http://{ARCHIVE_HOST}:{ARCHIVE_PORT}/conversation/history/{session_id}"
+            f"{ARCHIVE_HOST}/conversation/history/{session_id}"
         )
+
+        return response.json()
+    
+    @staticmethod
+    def upload_audio(
+        audio_path
+    ):
+        print(audio_path)
+        with open(
+            audio_path,
+            "rb"
+        ) as f:
+
+            response = requests.post(
+                f"{ARCHIVE_HOST}/upload/audio",
+                files={
+                    "file": f
+                }
+            )
+        print(response.json)
 
         return response.json()
