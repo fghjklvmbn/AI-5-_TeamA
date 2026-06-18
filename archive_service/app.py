@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
+from fastapi.staticfiles import StaticFiles
 
 from schemas.voice_create import (
     VoiceCreate
@@ -28,7 +29,25 @@ from services.conversation_service import (
     ConversationService
 )
 
+from pathlib import Path
+import uuid
+import shutil
+
 app = FastAPI()
+
+UPLOAD_DIR = Path(
+    "voice_uploads"
+)
+
+UPLOAD_DIR.mkdir(
+    exist_ok=True
+)
+
+app.mount(
+    "/voice_uploads",
+    StaticFiles(directory="voice_uploads"),
+    name="voice_uploads"
+)
 
 
 @app.get("/health")
@@ -46,36 +65,41 @@ def create_session(
 
     db = SessionLocal()
 
-    session = (
-        SessionService.create(
-            db,
-            payload
+    try:
+        session = (
+            SessionService.create(
+                db,
+                payload
+            )
         )
-    )
 
-    return {
-        "id": session.id
-    }
+        return {
+            "id": session.id
+        }
+    finally:
+        db.close()
 
 
 @app.post("/conversation")
 def create_conversation(
     payload: ConversationCreate
 ):
-
     db = SessionLocal()
-
-    conversation = (
-        ConversationService.create(
-            db,
-            payload
+    
+    try:
+        conversation = (
+            ConversationService.create(
+                db,
+                payload
+            )
         )
-    )
 
-    return {
-        "id":
-        conversation.id
-    }
+        return {
+            "id":
+            conversation.id
+        }
+    finally:
+        db.close()
 
 @app.get(
     "/conversation/history/{session_id}"
@@ -87,43 +111,46 @@ def get_history(
 
     db = SessionLocal()
 
-    conversations = (
-        ConversationService
-        .get_history(
-            db,
-            session_id
+    try:
+        conversations = (
+            ConversationService
+            .get_history(
+                db,
+                session_id
+            )
         )
-    )
 
-    result = []
+        result = []
 
-    for item in conversations:
+        for item in conversations:
 
-        result.append({
+            result.append({
 
-            "id":
-            item.id,
+                "id":
+                item.id,
 
-            "user_text":
-            item.user_text,
+                "user_text":
+                item.user_text,
 
-            "assistant_text":
-            item.assistant_text,
+                "assistant_text":
+                item.assistant_text,
 
-            "input_audio_path":
-            item.input_audio_path,
+                "input_audio_path":
+                item.input_audio_path,
 
-            "output_audio_path":
-            item.output_audio_path,
+                "output_audio_path":
+                item.output_audio_path,
 
-            "voice_id":
-            item.voice_id,
+                "voice_id":
+                item.voice_id,
 
-            "created_at":
-            item.created_at
-        })
+                "created_at":
+                item.created_at
+            })
 
-    return result
+        return result
+    finally:
+        db.close()
 
 
 @app.get(
@@ -133,31 +160,34 @@ def get_session_list():
 
     db = SessionLocal()
 
-    sessions = (
+    try:
+        sessions = (
 
-        SessionService
-        .get_all(
-            db
+            SessionService
+            .get_all(
+                db
+            )
         )
-    )
 
-    result = []
+        result = []
 
-    for item in sessions:
+        for item in sessions:
 
-        result.append({
+            result.append({
 
-            "id":
-            item.id,
+                "id":
+                item.id,
 
-            "session_name":
-            item.session_name,
+                "session_name":
+                item.session_name,
 
-            "created_at":
-            item.created_at
-        })
+                "created_at":
+                item.created_at
+            })
 
-    return result
+        return result
+    finally:
+        db.close()
 
 
 @app.get(
@@ -166,91 +196,99 @@ def get_session_list():
 def get_session(
     session_id: str
 ):
-
     db = SessionLocal()
 
-    session = (
+    try:
+        session = (
 
-        SessionService
-        .get_by_id(
-            db,
-            session_id
+            SessionService
+            .get_by_id(
+                db,
+                session_id
+            )
         )
-    )
 
-    if session is None:
+        if session is None:
+
+            return {
+                "error":
+                "session not found"
+            }
 
         return {
-            "error":
-            "session not found"
+
+            "id":
+            session.id,
+
+            "session_name":
+            session.session_name,
+
+            "created_at":
+            session.created_at
         }
-
-    return {
-
-        "id":
-        session.id,
-
-        "session_name":
-        session.session_name,
-
-        "created_at":
-        session.created_at
-    }
+    finally:
+        db.close()
 
 @app.post("/voice")
 def create_voice(
     payload: VoiceCreate
 ):
-
     db = SessionLocal()
 
-    voice = (
-        VoiceService.create(
-            db,
-            payload
+    try:
+        voice = (
+            VoiceService.create(
+                db,
+                payload
+            )
         )
-    )
 
-    return {
+        return {
 
-        "id":
-        voice.id
-    }
+            "id":
+            voice.id
+        }
+    finally:
+        db.close()
 
 @app.get("/voice/list")
 def get_voice_list():
 
     db = SessionLocal()
 
-    voices = (
-        VoiceService.get_all(
-            db
+    try:
+        voices = (
+            VoiceService.get_all(
+                db
+            )
         )
-    )
 
-    result = []
+        result = []
 
-    for item in voices:
+        for item in voices:
 
-        result.append({
+            result.append({
 
-            "id":
-            item.id,
+                "id":
+                item.id,
 
-            "voice_name":
-            item.voice_name,
+                "voice_name":
+                item.voice_name,
 
-            "audio_path":
-            item.audio_path,
+                "audio_path":
+                item.audio_path,
 
-            "reference_text":
-            item.reference_text,
+                "reference_text":
+                item.reference_text,
 
-            "description":
-            item.description
-        })
+                "description":
+                item.description
+            })
+        return result
+    
+    finally:
+        db.close()
 
-    return result
 
 @app.get("/voice/{voice_id}")
 def get_voice(
@@ -259,35 +297,80 @@ def get_voice(
 
     db = SessionLocal()
 
-    voice = (
-        VoiceService.get_by_id(
-            db,
-            voice_id
+    try:
+        voice = (
+            VoiceService.get_by_id(
+                db,
+                voice_id
+            )
         )
-    )
 
-    if voice is None:
+        if voice is None:
+
+            return {
+                "error":
+                "voice not found"
+            }
 
         return {
-            "error":
-            "voice not found"
+
+            "id":
+            voice.id,
+
+            "voice_name":
+            voice.voice_name,
+
+            "audio_path":
+            voice.audio_path,
+
+            "reference_text":
+            voice.reference_text,
+
+            "description":
+            voice.description
         }
+    finally:
+        db.close()
+    
+
+@app.post("/upload/audio")
+def upload_audio(
+    file: UploadFile = File(...)
+):
+
+    extension = (
+        Path(file.filename)
+        .suffix
+    )
+
+    filename = (
+        f"{uuid.uuid4()}{extension}"
+    )
+
+    save_path = (
+        UPLOAD_DIR
+        /
+        filename
+    )
+
+    with open(
+        save_path,
+        "wb"
+    ) as buffer:
+
+        shutil.copyfileobj(
+            file.file,
+            buffer
+        )
 
     return {
-
-        "id":
-        voice.id,
-
-        "voice_name":
-        voice.voice_name,
-
         "audio_path":
-        voice.audio_path,
+        str(save_path),
 
-        "reference_text":
-        voice.reference_text,
-
-        "description":
-        voice.description
+        "audio_url":
+        (
+            "https://developark.duckdns.org"
+            "/api_memoripal/archive"
+            f"/voice_uploads/{filename}"
+        )
     }
-    
