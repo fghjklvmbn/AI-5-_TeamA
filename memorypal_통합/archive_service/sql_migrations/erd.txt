@@ -1,0 +1,41 @@
+sessions
+│
+├── id
+├── user_id
+├── session_name
+└── created_at
+
+        │
+        │ 1:N
+        ▼
+
+conversations
+│
+├── id
+├── session_id
+├── voice_id
+├── user_text
+├── assistant_text
+├── input_audio_path
+├── output_audio_path
+└── created_at
+
+        │
+        │ N:1
+        ▼
+
+voice_profiles
+│
+├── id
+├── voice_name
+├── audio_path
+└── description
+
+
+sessions
+│
+└── memories
+    │
+    ├── memory_type
+    ├── content
+    └── confidence
