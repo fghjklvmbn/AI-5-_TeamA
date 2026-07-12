@@ -4,6 +4,9 @@ from frontend.pages.chat.events import (
     create_new_session,
     select_session
 )
+from frontend.services.voice_service import (
+    VoiceService
+)
 
 
 def chat_page():
@@ -41,6 +44,12 @@ def chat_page():
                 scale=8
             )
 
+            voice_selector = gr.Dropdown(
+                label="응답 음성",
+                choices=VoiceService.get_voice_choices(),
+                interactive=True
+            )
+
             send_btn = gr.Button(
                 "전송",
                 scale=1
@@ -71,6 +80,7 @@ def chat_page():
     return (
         session_state,
         session_list,
+        voice_selector,
         chatbot,
         message,
         send_btn,

@@ -106,6 +106,7 @@ with gr.Blocks(title="MemoryPal") as demo:
             (
                 session_state,
                 session_list,
+                voice_selector,
                 chatbot,
                 message,
                 send_btn,

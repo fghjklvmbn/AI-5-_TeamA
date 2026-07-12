@@ -7,7 +7,7 @@ sys.path.append(
     str(ROOT_DIR)
 )
 
-from backend.pipeline.stt_service import (
+from backend.pipeline.clients.stt_client import (
     STTService
 )
 

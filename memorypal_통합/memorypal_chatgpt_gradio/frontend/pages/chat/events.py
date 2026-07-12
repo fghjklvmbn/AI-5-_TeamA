@@ -237,19 +237,36 @@ def send_message(
 
     if voice_id:
         result = (
-            pipeline.run_text_with_tts(
-                session_id,
-                message,
-                voice_id
+            pipeline.run(
+                session_id=session_id,
+                message=message,
+                voice_id=voice_id
             )
         )
-
     else:
-        result = (
-            send_chat(
-                session_id,
-                message
-            )
+        raise ValueError("음성이 입력되지 않았습니다. 다시시도해주세요")
+    
+    # 오디오
+    audio_url = (
+        result["audio"]
+    )
+    
+
+    local_audio = (
+        f"storage/history/temp_{uuid.uuid4()}.wav"
+    )
+
+    response = requests.get(
+        audio_url
+    )
+
+    with open(
+        local_audio,
+        "wb"
+    ) as f:
+
+        f.write(
+            response.content
         )
 
     history.append(

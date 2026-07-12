@@ -71,6 +71,7 @@ def run_voice_chat(
     if not voice_id :
         voice_id = "00000000-0000-0000-0000-000000000001"
     
+    # 디버깅
     print("audio_path =", audio_path)
     print("session_id =", session_id)
     print("voice_id =", voice_id)
@@ -79,10 +80,11 @@ def run_voice_chat(
         pipeline.run(
             session_id=session_id,
             audio_path=uploaded["audio_url"],
-            voice=voice_id
+            voice_id=voice_id
         )
     )
-
+    
+    # 오디오
     audio_url = (
         result["audio"]
     )
@@ -105,11 +107,12 @@ def run_voice_chat(
             response.content
         )
 
+    # 음성 입력을 다른걸로 대체 완료
     history = [
 
         {
             "role": "user",
-            "content": "[음성 입력]"
+            "content": result["user_text"]
         },
 
         {
