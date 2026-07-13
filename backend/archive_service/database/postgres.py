@@ -1,10 +1,11 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = (
-    "postgresql://postgres:"
-    "oknwsx9283.@localhost:5432/"
-    "memoripal"
+DATABASE_URL = os.getenv(
+    "MEMORYPAL_ARCHIVE_DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/memoripal"
 )
 
 engine = create_engine(

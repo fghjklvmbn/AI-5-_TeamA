@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "MemoryPal",
+    "slug": "memorypal",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "MemoryPal이 실시간 대화를 위해 마이크를 사용합니다.",
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "configureAndroidBackup": true
+        }
+      ]
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.memorypal.mobile",
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "MemoryPal이 실시간 대화를 위해 마이크를 사용합니다."
+      }
+    },
+    "android": {
+      "package": "com.memorypal.mobile",
+      "permissions": ["RECORD_AUDIO"]
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

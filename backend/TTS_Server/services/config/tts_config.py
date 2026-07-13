@@ -1,2 +1,4 @@
-host_ip = "https://developark.duckdns.org/api_memoripal/tts"
-TTS_HOST=host_ip
+import os
+
+
+TTS_HOST = os.getenv("MEMORYPAL_TTS_PUBLIC_URL", "http://127.0.0.1:8003").rstrip("/")

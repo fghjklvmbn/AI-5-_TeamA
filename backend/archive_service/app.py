@@ -30,10 +30,16 @@ from services.conversation_service import (
 )
 
 from pathlib import Path
+import os
 import uuid
 import shutil
 
 app = FastAPI()
+
+ARCHIVE_PUBLIC_URL = os.getenv(
+    "MEMORYPAL_ARCHIVE_PUBLIC_URL",
+    "http://127.0.0.1:8004",
+).rstrip("/")
 
 UPLOAD_DIR = Path(
     "voice_uploads"
@@ -368,9 +374,5 @@ def upload_audio(
         str(save_path),
 
         "audio_url":
-        (
-            "https://developark.duckdns.org"
-            "/api_memoripal/archive"
-            f"/voice_uploads/{filename}"
-        )
+        f"{ARCHIVE_PUBLIC_URL}/voice_uploads/{filename}"
     }

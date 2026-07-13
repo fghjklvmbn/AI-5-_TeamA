@@ -3,6 +3,7 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from pathlib import Path
+import tempfile
 
 from fastapi import FastAPI
 from fastapi import UploadFile
@@ -13,13 +14,6 @@ from services.transcription_service import (
 )
 
 app = FastAPI()
-
-UPLOAD_DIR = Path("uploads")
-
-UPLOAD_DIR.mkdir(
-    exist_ok=True
-)
-
 
 @app.get("/health")
 def health():
@@ -33,22 +27,18 @@ def health():
 async def transcribe(
     audio: UploadFile = File(...)
 ):
+    suffix = Path(audio.filename or "segment.wav").suffix or ".wav"
+    content = await audio.read()
+    if not content:
+        return {"text": ""}
 
-    target = (
-        UPLOAD_DIR /
-        audio.filename
-    )
-
-    target.write_bytes(
-        await audio.read()
-    )
-
-    text = (
-        TranscriptionService.transcribe(
-            str(target)
-        )
-    )
-
-    return {
-        "text": text
-    }
+    target: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+            temp.write(content)
+            target = Path(temp.name)
+        text = TranscriptionService.transcribe(str(target))
+        return {"text": text}
+    finally:
+        if target is not None:
+            target.unlink(missing_ok=True)

@@ -1,0 +1,21 @@
+# Local secrets and generated data
+.env
+**/.env
+!**/.env.example
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+backend/gateway/data/
+backend/STT_backend_server/uploads/
+backend/TTS_Server/outputs/
+
+# Expo / Node
+frontend/node_modules/
+frontend/.expo/
+frontend/dist/
+npm-debug.log*
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+
