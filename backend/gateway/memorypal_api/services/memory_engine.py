@@ -8,7 +8,7 @@ from typing import Iterable
 
 from ..database import Database
 
-
+# 앗.. 정규표현식 너무 쓴것 같은데 정당해서 변경할수가 없다..
 MEMORY_TYPES = {"preference", "profile", "fact", "schedule", "relationship"}
 TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
 RECALL_RE = re.compile(
@@ -21,12 +21,16 @@ STOPWORDS = {
     "무엇", "뭐가", "어떤", "대해서", "관련", "질문", "알려줘", "알려주세요",
     "오늘", "내일", "모레", "이번", "저번", "정말", "그냥", "혹시",
 }
+
+# 타입 힌트(구분을 위함)
 TYPE_HINTS = {
     "preference": re.compile(r"(?:좋아|싫어|취향|선호|즐겨)"),
     "profile": re.compile(r"(?:이름|직업|나이|생일|사는\s*곳|고향)"),
     "schedule": re.compile(r"(?:일정|약속|예약|언제|날짜|회의|병원|치과)"),
     "relationship": re.compile(r"(?:가족|엄마|아빠|어머니|아버지|남편|아내|아들|딸|친구|동료)"),
 }
+
+# 타입 : 민감한 개인정보
 SENSITIVE_RE = re.compile(
     r"(?:비밀번호|패스워드|주민(?:등록)?번호|계좌번호|카드번호|보안코드|인증번호|"
     r"api\s*key|access\s*token|secret\s*key)",
@@ -41,7 +45,7 @@ class MemoryCandidate:
     confidence: float = 0.75
     importance: float = 0.6
 
-
+# 메모리 엔진(챗봇에서 값을 빼내고, 저장하도록 도와주는 주체)
 class MemoryEngine:
     """Small, local long-term memory layer with deterministic retrieval.
 
@@ -101,6 +105,7 @@ class MemoryEngine:
                 result.append(memory)
         return result
 
+    # 메모리 엔진 발동 조건 추출
     def extract_rule_candidates(self, text: str) -> list[MemoryCandidate]:
         clean = re.sub(r"\s+", " ", text.strip())
         result: list[MemoryCandidate] = []
@@ -129,6 +134,7 @@ class MemoryEngine:
 
         return result[:5]
 
+    # 메모리 엔진 중심, 기억해야 할 것을 파악하고 점수로 매겨 기억 가중치 측정
     def retrieve(self, user_id: str, query: str, limit: int = 6) -> list:
         rows = self.db.list_memories(user_id, limit=500)
         if not rows:

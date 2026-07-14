@@ -25,7 +25,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="MemoryPal API",
         version="0.1.0",
-        description="JWT authentication, user memory, and Qwen voice pipeline gateway",
+        description="JWT 인증, 사용자 개인화 기억, AI 파이프라인 게이트웨이 서버",
         root_path=resolved.root_path,
         lifespan=lifespan,
     )

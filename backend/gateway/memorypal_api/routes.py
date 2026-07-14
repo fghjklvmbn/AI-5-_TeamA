@@ -34,6 +34,8 @@ from .services.pipeline import PipelineUnavailable
 
 router = APIRouter(prefix="/v1")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+# 메모리 저장을 위한 순수 정규표현식 노가다
 SAVE_REQUEST_RE = re.compile(
     r"(?:저장|기억|메모)(?:해|해\s*줘|해\s*주세요|해\s*둬|해둘래|할래|해라|해줘요)", re.IGNORECASE,
 )
@@ -102,15 +104,15 @@ def direct_user_note(user_text: str) -> tuple[str, str]:
         return "", title
     return source, title
 
-
+# 노트매치 체크(레시피 제외)
 def note_matches_source(candidate: MemoryCandidate, source_text: str) -> bool:
-    generic = {"레시피", "메모", "내용", "저장", "기억", "사용자", "요약"}
+    generic = {"메모", "내용", "저장", "기억", "사용자", "요약"}
     source_tokens = set(re.findall(r"[0-9A-Za-z가-힣]{2,}", source_text.lower())) - generic
     note_tokens = set(re.findall(r"[0-9A-Za-z가-힣]{2,}", candidate.content.lower())) - generic
     required = min(2, len(source_tokens))
     return required > 0 and len(source_tokens & note_tokens) >= required
 
-
+# 세션 메모리 저장 fallback 로직(저장 실패시) -> "어" 나 "그래" 같은 답변을 유도함
 def fallback_session_memory(history_rows) -> MemoryCandidate | None:
     for row in reversed(history_rows):
         content = re.sub(
@@ -121,7 +123,7 @@ def fallback_session_memory(history_rows) -> MemoryCandidate | None:
             return MemoryCandidate("fact", content, 0.9, 0.82)
     return None
 
-
+# 메모리 응답(참조)
 def memory_response(row) -> MemoryResponse:
     return MemoryResponse(
         id=row["id"],
@@ -133,7 +135,7 @@ def memory_response(row) -> MemoryResponse:
         updated_at=row["updated_at"],
     )
 
-
+# 엔드포인트 시작
 @router.get("/health")
 def health(request: Request):
     return {
@@ -383,6 +385,7 @@ async def transcribe(
     audio: UploadFile = File(...),
     _user: CurrentUser = Depends(get_current_user),
 ):
+    # 음성 입력 데이터 15메가 제한 로직 및 예외처리
     content = await audio.read(15 * 1024 * 1024 + 1)
     if not content:
         raise HTTPException(status_code=422, detail="녹음 데이터가 비어 있습니다.")
@@ -420,6 +423,7 @@ def voice_status(request: Request, user: CurrentUser = Depends(get_current_user)
 
 @router.post("/voices", response_model=VoiceResponse, status_code=201)
 async def create_voice(
+    # 필수값 지정
     request: Request, audio: UploadFile = File(...), voice_name: str = Form(...),
     reference_text: str = Form(...), description: str = Form(""),
     user: CurrentUser = Depends(get_current_user),
