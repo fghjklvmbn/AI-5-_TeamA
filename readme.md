@@ -26,7 +26,8 @@ API 문서는 통합 서버 실행 후 `http://localhost:8000/docs`에서 확인
 
 1. `install.cmd`: Python 가상환경과 Frontend 패키지를 설치하고, SQLite DB 스키마와 웹 번들을 생성합니다.
 2. `run.cmd`: Gateway(8000)와 Frontend(8081)를 함께 백그라운드로 실행합니다.
-3. `uninstall.cmd`: 실행 프로세스를 종료하고 `.venv`, `node_modules`, 빌드, `__pycache__`를 제거합니다.
+3. `stop.cmd`: `run.cmd`로 시작한 Gateway와 Frontend만 안전하게 종료하고 로그는 보존합니다.
+4. `uninstall.cmd`: 실행 프로세스를 종료하고 `.venv`, `node_modules`, 빌드, `__pycache__`를 제거합니다.
 
 실제 비밀번호와 JWT 키가 들어가는 루트 `.env`는 Git에서 제외됩니다. 일반 삭제는 사용자 DB와
 `.env`를 보존합니다. 로컬 DB와 업로드 파일까지 지우려는 경우에만

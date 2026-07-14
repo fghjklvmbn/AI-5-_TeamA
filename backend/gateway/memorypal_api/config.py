@@ -55,7 +55,7 @@ def load_settings() -> Settings:
         ),
         root_path=os.getenv("MEMORYPAL_ROOT_PATH", "").rstrip("/"),
         stt_url=os.getenv("MEMORYPAL_STT_URL", "http://127.0.0.1:8001").rstrip("/"),
-        llm_url=os.getenv("MEMORYPAL_LLM_URL", "http://192.168.2.41:1234/v1").rstrip("/"),
+        llm_url=os.getenv("MEMORYPAL_LLM_URL", "http://127.0.0.1:8002").rstrip("/"),
         llm_api_key=os.getenv("MEMORYPAL_LLM_API_KEY", "lm-studio"),
         llm_default_model=os.getenv("MEMORYPAL_DEFAULT_LLM_MODEL", "qwen3.5-4b"),
         llm_companion_model=os.getenv("MEMORYPAL_COMPANION_LLM_MODEL", "memorypal_ai"),
