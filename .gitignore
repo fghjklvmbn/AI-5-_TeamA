@@ -1,19 +1,32 @@
 # Local secrets and generated data
 .env
 **/.env
+**/.env.*
 !**/.env.example
+!**/.env.production.example
 **/__pycache__/
 **/.pytest_cache/
 **/.venv/
+**/*.egg-info/
+**/*.db
+**/*.sqlite
+**/*.sqlite3
 backend/gateway/data/
 backend/STT_backend_server/uploads/
 backend/TTS_Server/outputs/
+backend/archive_service/voice_uploads/
+backend.zip
 
 # Expo / Node
 frontend/node_modules/
 frontend/.expo/
 frontend/dist/
+frontend/.expo-test-dist/
+frontend/.expo-web.*.log
+frontend/.static-web.*.log
+frontend/.static-proxy.*.log
 npm-debug.log*
+.runtime/
 
 # Editors and operating systems
 .DS_Store

@@ -14,11 +14,11 @@ cd backend/gateway
 py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .
-Copy-Item .env.example .env
+Copy-Item ..\..\.env.example ..\..\.env
 python -m memorypal_api
 ```
 
-환경 변수는 `.env.example`을 참고하세요. 실제 서비스에서는 반드시 `MEMORYPAL_JWT_SECRET`을 긴 무작위 값으로 바꾸고, 실행 환경에서 환경 변수로 주입해야 합니다.
+모든 서비스 환경 변수는 프로젝트 루트 `.env.example` 한 곳을 참고하세요. 실제 서비스에서는 반드시 `MEMORYPAL_JWT_SECRET`과 DB 접속 정보를 루트 `.env`에서 설정해야 합니다.
 
 주요 API는 `/v1/auth/*`, `/v1/sessions`, `/v1/chat/messages`, `/v1/voice/transcribe`, `/v1/memories`이며 OpenAPI 문서는 `/docs`에서 확인할 수 있습니다.
 

@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 
 import { api } from '../api';
-import { colors } from '../theme';
+import { useTheme, type ThemeColors } from '../theme';
 import type { MemoryItem } from '../types';
 
 const labels: Record<MemoryItem['memory_type'], { label: string; icon: string }> = {
@@ -23,6 +23,8 @@ const labels: Record<MemoryItem['memory_type'], { label: string; icon: string }>
 };
 
 export function MemoryScreen({ token }: { token: string }) {
+  const { colors } = useTheme();
+  const styles = createStyles(colors);
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -123,7 +125,7 @@ export function MemoryScreen({ token }: { token: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: ThemeColors) => StyleSheet.create({
   root: { flex: 1 },
   header: { padding: 24, paddingBottom: 17, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   eyebrow: { color: colors.primaryDark, fontSize: 10, letterSpacing: 1.5, fontWeight: '800' },
@@ -145,7 +147,7 @@ const styles = StyleSheet.create({
   content: { color: colors.ink, fontSize: 15, lineHeight: 23, fontWeight: '600', marginTop: 13 },
   date: { color: colors.muted, fontSize: 10, marginTop: 10 },
   error: { color: colors.danger, textAlign: 'center', fontSize: 12, marginTop: 10 },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(31,24,40,0.42)', alignItems: 'center', justifyContent: 'center', padding: 22 },
+  modalBackdrop: { flex: 1, backgroundColor: colors.overlay, alignItems: 'center', justifyContent: 'center', padding: 22 },
   modalCard: { width: '100%', maxWidth: 460, borderRadius: 26, backgroundColor: colors.surface, padding: 22 },
   modalTitle: { color: colors.ink, fontSize: 21, fontWeight: '900' },
   modalSubtitle: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 7 },
@@ -156,7 +158,7 @@ const styles = StyleSheet.create({
   typeChoiceTextActive: { color: colors.primaryDark },
   input: { minHeight: 115, marginTop: 15, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 14, color: colors.ink, fontSize: 14, textAlignVertical: 'top' },
   actions: { flexDirection: 'row', gap: 9, marginTop: 16 },
-  cancel: { flex: 1, height: 48, borderRadius: 14, backgroundColor: '#F4F1F6', alignItems: 'center', justifyContent: 'center' },
+  cancel: { flex: 1, height: 48, borderRadius: 14, backgroundColor: colors.subtle, alignItems: 'center', justifyContent: 'center' },
   cancelText: { color: colors.muted, fontWeight: '800' },
   save: { flex: 1.4, height: 48, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
   saveText: { color: '#FFFFFF', fontWeight: '800' },

@@ -8,23 +8,30 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "build:web": "expo export --clear --platform web --output-dir dist",
+    "serve:web": "python -m http.server 7860 --directory dist",
+    "serve:web:proxy": "python -m http.server 8081 --directory dist",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~56.0.0",
+    "expo-asset": "~56.0.19",
     "expo-audio": "~56.0.12",
+    "expo-blur": "~56.0.3",
+    "expo-document-picker": "~56.0.4",
     "expo-linear-gradient": "~56.0.4",
     "expo-secure-store": "~56.0.4",
     "expo-status-bar": "~56.0.4",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
-    "react-native": "0.85.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-web": "~0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.0",
-    "typescript": "~5.9.2"
+    "dotenv": "^17.4.2",
+    "typescript": "~6.0.3"
   }
 }

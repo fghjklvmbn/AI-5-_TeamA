@@ -19,7 +19,8 @@
         {
           "configureAndroidBackup": true
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "ios": {
       "supportsTablet": true,
@@ -33,10 +34,15 @@
     },
     "android": {
       "package": "com.memorypal.mobile",
-      "permissions": ["RECORD_AUDIO"]
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro"
+    },
+    "experiments": {
+      "baseUrl": "/api_memoripal/main"
     }
   }
 }

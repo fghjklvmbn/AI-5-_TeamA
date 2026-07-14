@@ -1,5 +1,7 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
 
 from schemas.voice_create import (
     VoiceCreate
@@ -35,6 +37,22 @@ import uuid
 import shutil
 
 app = FastAPI()
+
+
+@app.exception_handler(UnicodeDecodeError)
+async def handle_database_encoding_error(request: Request, exc: UnicodeDecodeError):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Archive database connection failed. Check PostgreSQL and MEMORYPAL_ARCHIVE_DATABASE_URL."},
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def handle_database_error(request: Request, exc: SQLAlchemyError):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Archive database is unavailable. Check PostgreSQL and MEMORYPAL_ARCHIVE_DATABASE_URL."},
+    )
 
 ARCHIVE_PUBLIC_URL = os.getenv(
     "MEMORYPAL_ARCHIVE_PUBLIC_URL",
@@ -371,7 +389,7 @@ def upload_audio(
 
     return {
         "audio_path":
-        str(save_path),
+        str(save_path.resolve()),
 
         "audio_url":
         f"{ARCHIVE_PUBLIC_URL}/voice_uploads/{filename}"

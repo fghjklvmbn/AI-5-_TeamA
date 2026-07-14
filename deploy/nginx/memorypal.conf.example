@@ -1,0 +1,76 @@
+# Deployed public prefix: /api_memoripal.
+# Keep this spelling consistent with the existing DNS server configuration.
+
+location /api_memoripal/gateway/ {
+    proxy_pass http://192.168.2.75:8000/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /api_memoripal/gateway;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+    client_max_body_size 20m;
+}
+
+location /api_memoripal/archive/ {
+    proxy_pass http://192.168.2.75:8004/;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+}
+
+location /api_memoripal/stt/ {
+    proxy_pass http://192.168.2.75:8001/;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+    client_max_body_size 20m;
+}
+
+location /api_memoripal/tts/ {
+    proxy_pass http://192.168.2.75:8003/;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+}
+
+location /api_memoripal/llm/v1/ {
+    proxy_pass http://192.168.2.41:1234/v1/;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+}
+
+location /api_memoripal/test_tts/ {
+    proxy_pass http://192.168.2.75:5173/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+}
+
+# Port 8081 serves the Expo production export. This avoids Metro/HMR path
+# conflicts when the app is exposed below /api_memoripal/main/.
+location /api_memoripal/main/ {
+    proxy_pass http://192.168.2.75:8081/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+}

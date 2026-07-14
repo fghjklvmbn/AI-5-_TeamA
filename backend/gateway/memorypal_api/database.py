@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import uuid
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,7 +26,7 @@ class Database:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock, self.connect() as db:
+        with self._lock, closing(self.connect()) as db:
             db.executescript(
                 """
                 PRAGMA journal_mode = WAL;
@@ -75,25 +76,50 @@ class Database:
                     last_accessed_at TEXT,
                     UNIQUE(user_id, normalized_content)
                 );
+                CREATE TABLE IF NOT EXISTS user_voice_profiles (
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    voice_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (user_id, voice_id)
+                );
+                CREATE TABLE IF NOT EXISTS attachments (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    text_content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS session_working_memory (
+                    session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    context TEXT NOT NULL,
+                    turn_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
                     ON chat_sessions(user_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_conversations_session_created
                     ON conversations(session_id, created_at ASC);
                 CREATE INDEX IF NOT EXISTS idx_memories_user_updated
                     ON memories(user_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_attachments_session_created
+                    ON attachments(user_id, session_id, created_at ASC);
                 """
             )
 
     def fetch_one(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
-        with self._lock, self.connect() as db:
+        with self._lock, closing(self.connect()) as db:
             return db.execute(query, tuple(params)).fetchone()
 
     def fetch_all(self, query: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
-        with self._lock, self.connect() as db:
+        with self._lock, closing(self.connect()) as db:
             return db.execute(query, tuple(params)).fetchall()
 
     def execute(self, query: str, params: Iterable[Any] = ()) -> int:
-        with self._lock, self.connect() as db:
+        with self._lock, closing(self.connect()) as db:
             cursor = db.execute(query, tuple(params))
             db.commit()
             return cursor.rowcount
@@ -146,6 +172,39 @@ class Database:
             (user_id,),
         )
 
+    def delete_session(self, user_id: str, session_id: str) -> bool:
+        return self.execute(
+            "DELETE FROM chat_sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ) > 0
+
+    def create_attachment(
+        self, user_id: str, session_id: str, filename: str, content_type: str,
+        size_bytes: int, text_content: str,
+    ) -> sqlite3.Row:
+        attachment_id = str(uuid.uuid4())
+        self.execute(
+            "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (attachment_id, user_id, session_id, filename, content_type, size_bytes, text_content, utc_now()),
+        )
+        return self.get_attachment(user_id, attachment_id)  # type: ignore[return-value]
+
+    def get_attachment(self, user_id: str, attachment_id: str) -> sqlite3.Row | None:
+        return self.fetch_one(
+            "SELECT * FROM attachments WHERE id = ? AND user_id = ?", (attachment_id, user_id)
+        )
+
+    def list_attachments(self, user_id: str, session_id: str) -> list[sqlite3.Row]:
+        return self.fetch_all(
+            "SELECT * FROM attachments WHERE user_id = ? AND session_id = ? ORDER BY created_at ASC",
+            (user_id, session_id),
+        )
+
+    def delete_attachment(self, user_id: str, attachment_id: str) -> bool:
+        return self.execute(
+            "DELETE FROM attachments WHERE id = ? AND user_id = ?", (attachment_id, user_id)
+        ) > 0
+
     def save_conversation(
         self,
         user_id: str,
@@ -157,7 +216,7 @@ class Database:
     ) -> sqlite3.Row:
         conversation_id = str(uuid.uuid4())
         now = utc_now()
-        with self._lock, self.connect() as db:
+        with self._lock, closing(self.connect()) as db:
             db.execute(
                 "INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -185,6 +244,80 @@ class Database:
             "ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
             (user_id, session_id, limit),
         )
+
+    def get_conversation(self, user_id: str, conversation_id: str) -> sqlite3.Row | None:
+        return self.fetch_one(
+            "SELECT * FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id)
+        )
+
+    def get_history_before(
+        self, user_id: str, session_id: str, created_at: str, limit: int = 10,
+    ) -> list[sqlite3.Row]:
+        return self.fetch_all(
+            "SELECT * FROM (SELECT * FROM conversations WHERE user_id = ? AND session_id = ? "
+            "AND created_at < ? ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC",
+            (user_id, session_id, created_at, limit),
+        )
+
+    def get_session_working_memory(self, user_id: str, session_id: str) -> str:
+        row = self.fetch_one(
+            "SELECT context FROM session_working_memory WHERE user_id = ? AND session_id = ?",
+            (user_id, session_id),
+        )
+        return str(row["context"]) if row is not None else ""
+
+    def upsert_session_working_memory(
+        self, user_id: str, session_id: str, context: str, turn_count: int,
+    ) -> None:
+        self.execute(
+            """
+            INSERT INTO session_working_memory (session_id, user_id, context, turn_count, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                context = excluded.context,
+                turn_count = excluded.turn_count,
+                updated_at = excluded.updated_at
+            WHERE session_working_memory.user_id = excluded.user_id
+            """,
+            (session_id, user_id, context, turn_count, utc_now()),
+        )
+
+    def update_conversation_response(
+        self, user_id: str, conversation_id: str, assistant_text: str,
+        output_audio_path: str | None,
+    ) -> sqlite3.Row | None:
+        updated = self.execute(
+            "UPDATE conversations SET assistant_text = ?, output_audio_path = ? WHERE id = ? AND user_id = ?",
+            (assistant_text, output_audio_path, conversation_id, user_id),
+        )
+        if not updated:
+            return None
+        conversation = self.get_conversation(user_id, conversation_id)
+        if conversation is not None:
+            self.execute(
+                "UPDATE chat_sessions SET updated_at = ? WHERE id = ? AND user_id = ?",
+                (utc_now(), conversation["session_id"], user_id),
+            )
+        return conversation
+
+    def add_user_voice(self, user_id: str, voice_id: str) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO user_voice_profiles VALUES (?, ?, ?)",
+            (user_id, voice_id, utc_now()),
+        )
+
+    def list_user_voice_ids(self, user_id: str) -> set[str]:
+        return {
+            row["voice_id"]
+            for row in self.fetch_all(
+                "SELECT voice_id FROM user_voice_profiles WHERE user_id = ?", (user_id,)
+            )
+        }
+
+    def user_has_voice(self, user_id: str, voice_id: str) -> bool:
+        return self.fetch_one(
+            "SELECT 1 FROM user_voice_profiles WHERE user_id = ? AND voice_id = ?", (user_id, voice_id)
+        ) is not None
 
     def upsert_memory(
         self,

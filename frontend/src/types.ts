@@ -46,5 +46,23 @@ export type Voice = {
   id: string;
   voice_name: string;
   description?: string | null;
+  is_default: boolean;
+  is_personalized: boolean;
+};
+
+export type Attachment = {
+  id: string;
+  session_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  created_at: string;
+};
+
+export type Persona = 'default' | 'emotional_companion';
+
+export type VoiceStatus = {
+  has_personalized_voice: boolean;
+  personalized_voice_count: number;
 };
 

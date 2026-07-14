@@ -12,9 +12,11 @@ import {
 } from 'react-native';
 
 import { useAuth } from '../AuthContext';
-import { colors, shadow } from '../theme';
+import { shadow, useTheme, type ThemeColors } from '../theme';
 
 export function LoginScreen() {
+  const { colors, darkMode } = useTheme();
+  const styles = createStyles(colors);
   const { login, register } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
@@ -24,6 +26,18 @@ export function LoginScreen() {
   const [error, setError] = useState('');
 
   const submit = async () => {
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
+      setError('올바른 이메일 주소를 입력해 주세요.');
+      return;
+    }
+    if (password.length < 8) {
+      setError('비밀번호는 8자 이상 입력해 주세요.');
+      return;
+    }
+    if (mode === 'register' && !name.trim()) {
+      setError('이름을 입력해 주세요.');
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -37,7 +51,7 @@ export function LoginScreen() {
   };
 
   return (
-    <LinearGradient colors={['#F8F4FF', '#FFFFFF', '#F1EAFE']} style={styles.background}>
+    <LinearGradient colors={darkMode ? ['#17131D', '#211B29', '#241A35'] : ['#F8F4FF', '#FFFFFF', '#F1EAFE']} style={styles.background}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.keyboard}
@@ -119,7 +133,7 @@ export function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: ThemeColors) => StyleSheet.create({
   background: { flex: 1 },
   keyboard: { flex: 1, justifyContent: 'center', padding: 24 },
   brand: { alignItems: 'center', marginBottom: 28 },
@@ -128,15 +142,15 @@ const styles = StyleSheet.create({
   eyebrow: { color: colors.primaryDark, fontSize: 13, fontWeight: '700', letterSpacing: 1.4 },
   title: { color: colors.ink, fontSize: 36, fontWeight: '900', letterSpacing: -1.2, marginTop: 5 },
   subtitle: { color: colors.muted, fontSize: 14, marginTop: 7 },
-  card: { backgroundColor: colors.surface, borderRadius: 28, padding: 22, borderWidth: 1, borderColor: '#F0ECF4', ...shadow },
-  switcher: { flexDirection: 'row', backgroundColor: '#F5F2F7', borderRadius: 14, padding: 4, marginBottom: 22 },
+  card: { backgroundColor: colors.surface, borderRadius: 28, padding: 22, borderWidth: 1, borderColor: colors.border, ...shadow },
+  switcher: { flexDirection: 'row', backgroundColor: colors.subtle, borderRadius: 14, padding: 4, marginBottom: 22 },
   switch: { flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 11 },
   switchActive: { backgroundColor: colors.surface },
   switchText: { color: colors.muted, fontSize: 14, fontWeight: '700' },
   switchTextActive: { color: colors.primaryDark },
   field: { marginBottom: 15 },
   label: { color: colors.ink, fontSize: 13, fontWeight: '700', marginBottom: 7 },
-  input: { height: 52, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 15, color: colors.ink, backgroundColor: '#FEFDFE', fontSize: 15 },
+  input: { height: 52, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 15, color: colors.ink, backgroundColor: colors.input, fontSize: 15 },
   error: { color: colors.danger, marginBottom: 13, fontSize: 13 },
   submit: { height: 54, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: 3 },
   submitText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },

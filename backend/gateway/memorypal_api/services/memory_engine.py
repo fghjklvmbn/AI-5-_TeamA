@@ -11,6 +11,22 @@ from ..database import Database
 
 MEMORY_TYPES = {"preference", "profile", "fact", "schedule", "relationship"}
 TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+RECALL_RE = re.compile(
+    r"(?:기억(?:이|을|나|해)?|가물가물|뭐였(?:지|죠)|뭐더라|생각(?:이)?\s*안\s*나|"
+    r"잊어버|전에\s*말한|내가\s*말했|제가\s*말했|알려줬)", re.IGNORECASE,
+)
+QUESTION_RE = re.compile(r"(?:[?？]|뭐|무엇|어떤|언제|어디|누구|알려|추천|기억)", re.IGNORECASE)
+STOPWORDS = {
+    "내가", "제가", "나는", "저는", "우리", "그거", "그게", "이거", "이게",
+    "무엇", "뭐가", "어떤", "대해서", "관련", "질문", "알려줘", "알려주세요",
+    "오늘", "내일", "모레", "이번", "저번", "정말", "그냥", "혹시",
+}
+TYPE_HINTS = {
+    "preference": re.compile(r"(?:좋아|싫어|취향|선호|즐겨)"),
+    "profile": re.compile(r"(?:이름|직업|나이|생일|사는\s*곳|고향)"),
+    "schedule": re.compile(r"(?:일정|약속|예약|언제|날짜|회의|병원|치과)"),
+    "relationship": re.compile(r"(?:가족|엄마|아빠|어머니|아버지|남편|아내|아들|딸|친구|동료)"),
+}
 SENSITIVE_RE = re.compile(
     r"(?:비밀번호|패스워드|주민(?:등록)?번호|계좌번호|카드번호|보안코드|인증번호|"
     r"api\s*key|access\s*token|secret\s*key)",
@@ -117,31 +133,59 @@ class MemoryEngine:
         rows = self.db.list_memories(user_id, limit=500)
         if not rows:
             return []
-        query_tokens = set(self.keywords(query))
+        query_tokens = {token for token in self.keywords(query) if token not in STOPWORDS}
+        recall_requested = bool(RECALL_RE.search(query))
+        question_requested = bool(QUESTION_RE.search(query))
+        hinted_types = {kind for kind, pattern in TYPE_HINTS.items() if pattern.search(query)}
         now = datetime.now(UTC)
 
-        def score(row) -> float:
+        def token_matches(memory_tokens: set[str]) -> int:
+            return sum(
+                1 for query_token in query_tokens
+                if any(
+                    query_token == memory_token
+                    or (min(len(query_token), len(memory_token)) >= 3 and (
+                        query_token.startswith(memory_token) or memory_token.startswith(query_token)
+                    ))
+                    for memory_token in memory_tokens
+                )
+            )
+
+        def relevance(row) -> tuple[bool, float]:
             memory_tokens = set((row["keywords"] or "").split())
-            overlap = len(query_tokens & memory_tokens) / max(1, len(query_tokens))
+            matches = token_matches(memory_tokens)
+            overlap = matches / max(1, len(query_tokens))
+            type_match = row["memory_type"] in hinted_types
+            generic_recall = recall_requested and not hinted_types and len(query_tokens) <= 2
+            eligible = matches > 0 or ((recall_requested or question_requested) and type_match) or generic_recall
+            return eligible, overlap + (0.35 if type_match else 0.0)
+
+        def score(row, relevance_score: float) -> float:
             updated = datetime.fromisoformat(row["updated_at"])
             age_days = max(0.0, (now - updated).total_seconds() / 86400)
             recency = math.exp(-age_days / 90)
             return (
-                overlap * 0.58
-                + float(row["importance"]) * 0.2
-                + float(row["confidence"]) * 0.12
-                + recency * 0.1
+                relevance_score * 0.82
+                + float(row["importance"]) * 0.08
+                + float(row["confidence"]) * 0.06
+                + recency * 0.04
             )
 
-        ranked = sorted(rows, key=score, reverse=True)
-        selected = ranked[:limit]
+        eligible_rows = []
+        for row in rows:
+            eligible, relevance_score = relevance(row)
+            if eligible:
+                eligible_rows.append((score(row, relevance_score), row))
+        eligible_rows.sort(key=lambda item: item[0], reverse=True)
+        effective_limit = min(limit, 2) if recall_requested and not hinted_types else min(limit, 3)
+        selected = [row for _, row in eligible_rows[:effective_limit]]
         self.db.touch_memories(user_id, [row["id"] for row in selected])
         return selected
 
     @staticmethod
     def as_prompt(memories: list) -> str:
         if not memories:
-            return "저장된 관련 기억 없음"
+            return ""
         labels = {
             "preference": "취향",
             "profile": "프로필",

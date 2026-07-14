@@ -40,11 +40,29 @@ class SessionResponse(BaseModel):
     updated_at: str
 
 
+class AttachmentResponse(BaseModel):
+    id: str
+    session_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    created_at: str
+
+
 class ChatRequest(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
     session_id: str | None = None
     voice_id: str | None = None
     speak: bool = True
+    casual_mode: bool = False
+    persona: Literal["default", "emotional_companion"] = "default"
+
+
+class RegenerateRequest(BaseModel):
+    voice_id: str | None = None
+    speak: bool = True
+    casual_mode: bool = False
+    persona: Literal["default", "emotional_companion"] = "default"
 
 
 class MessageResponse(BaseModel):
@@ -79,3 +97,18 @@ class MemoryCreate(BaseModel):
 
 class TranscriptResponse(BaseModel):
     text: str
+
+
+class VoiceResponse(BaseModel):
+    id: str
+    voice_name: str
+    audio_path: str
+    reference_text: str
+    description: str | None = None
+    is_default: bool = False
+    is_personalized: bool = False
+
+
+class VoiceStatusResponse(BaseModel):
+    has_personalized_voice: bool
+    personalized_voice_count: int

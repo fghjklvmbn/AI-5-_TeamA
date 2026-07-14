@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BlurView } from 'expo-blur';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
@@ -10,46 +12,159 @@ import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { MemoryScreen } from './src/screens/MemoryScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { colors } from './src/theme';
+import { ThemeProvider, useTheme } from './src/theme';
+import type { ChatResponse, Message, Persona } from './src/types';
 
-function MemoryPalApp() {
+function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDarkModeChange: (enabled: boolean) => void }) {
   const { loading, token, user, logout } = useAuth();
   const [tab, setTab] = useState<Tab>('home');
   const [sessionId, setSessionId] = useState<string>();
+  const [casualMode, setCasualMode] = useState(false);
+  const [persona, setPersona] = useState<Persona>('default');
+  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(true);
+  const [voiceProcessing, setVoiceProcessing] = useState<{ active: boolean; transcript: string }>({ active: false, transcript: '' });
+  const [incomingMessage, setIncomingMessage] = useState<Message>();
+  const { colors } = useTheme();
+  const styles = createStyles(colors);
+
+  useEffect(() => {
+    if (!user) {
+      setCasualMode(false);
+      setPersona('default');
+      setVoiceReplyEnabled(true);
+      return;
+    }
+    let active = true;
+    void AsyncStorage.getItem(`memorypal.casualMode.${user.id}`).then((stored) => {
+      if (active) setCasualMode(stored === 'true');
+    });
+    void AsyncStorage.getItem(`memorypal.persona.${user.id}`).then((stored) => {
+      if (active && (stored === 'default' || stored === 'emotional_companion')) {
+        setPersona(stored);
+      }
+    });
+    void AsyncStorage.getItem(`memorypal.voiceReplyEnabled.${user.id}`).then((stored) => {
+      if (active) setVoiceReplyEnabled(stored !== 'false');
+    });
+    return () => { active = false; };
+  }, [user]);
 
   if (loading) {
     return <View style={styles.loading}><ActivityIndicator color={colors.primary} size="large" /></View>;
   }
   if (!token || !user) return <LoginScreen />;
 
-  const openConversation = (id: string) => {
+  const openVoiceConversation = (response: ChatResponse) => {
+    setSessionId(response.session.id);
+    setIncomingMessage(response.message);
+    setTab('chat');
+  };
+
+  const updateConversation = (id: string) => {
     setSessionId(id || undefined);
-    if (id) setTab('chat');
+  };
+
+  const updateCasualMode = (enabled: boolean) => {
+    setCasualMode(enabled);
+    void AsyncStorage.setItem(`memorypal.casualMode.${user.id}`, String(enabled));
+  };
+
+  const updatePersona = (value: Persona) => {
+    setPersona(value);
+    void AsyncStorage.setItem(`memorypal.persona.${user.id}`, value);
+  };
+
+  const updateVoiceReply = (enabled: boolean) => {
+    setVoiceReplyEnabled(enabled);
+    void AsyncStorage.setItem(`memorypal.voiceReplyEnabled.${user.id}`, String(enabled));
+  };
+
+  const updateDarkMode = (enabled: boolean) => {
+    onDarkModeChange(enabled);
+    void AsyncStorage.setItem('memorypal.darkMode', String(enabled));
+  };
+
+  const updateVoiceProcessing = (active: boolean, transcript = '') => {
+    setVoiceProcessing({ active, transcript: active ? transcript : '' });
   };
 
   return (
     <SafeAreaView style={styles.safe}>
-      <StatusBar style="dark" />
+      <StatusBar style={darkMode ? 'light' : 'dark'} />
       <View style={styles.phone}>
         <View style={styles.screen}>
-          {tab === 'home' && <HomeScreen token={token} user={user} sessionId={sessionId} onConversation={openConversation} />}
-          {tab === 'chat' && <ChatScreen token={token} activeSessionId={sessionId} onSessionChange={openConversation} />}
+          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceReplyEnabled={voiceReplyEnabled} onPersonaChange={updatePersona} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} />}
+          <View
+            pointerEvents={tab === 'chat' ? 'auto' : 'none'}
+            style={[styles.chatScreen, tab !== 'chat' && styles.hiddenScreen]}
+          >
+            <ChatScreen
+              token={token}
+              activeSessionId={sessionId}
+              casualMode={casualMode}
+              persona={persona}
+              voiceReplyEnabled={voiceReplyEnabled}
+              incomingMessage={incomingMessage}
+              onIncomingMessageConsumed={() => setIncomingMessage(undefined)}
+              onSessionChange={updateConversation}
+              onVoiceProcessingChange={updateVoiceProcessing}
+            />
+          </View>
           {tab === 'memory' && <MemoryScreen token={token} />}
-          {tab === 'settings' && <SettingsScreen token={token} user={user} logout={logout} />}
+          {tab === 'settings' && <SettingsScreen token={token} user={user} casualMode={casualMode} persona={persona} darkMode={darkMode} voiceReplyEnabled={voiceReplyEnabled} onCasualModeChange={updateCasualMode} onPersonaChange={updatePersona} onDarkModeChange={updateDarkMode} onVoiceReplyChange={updateVoiceReply} logout={logout} />}
         </View>
         <BottomTabs current={tab} onChange={setTab} />
       </View>
+      {voiceProcessing.active && (
+        <View style={styles.processingOverlay}>
+          <BlurView intensity={32} style={StyleSheet.absoluteFill} tint={darkMode ? 'dark' : 'light'} />
+          <View style={styles.processingShade} />
+          <View style={styles.processingCard}>
+            <ActivityIndicator color={colors.primary} size="large" />
+            <Text style={styles.processingTitle}>
+              {voiceProcessing.transcript ? '답변을 준비하고 있어요' : '음성을 인식하고 있어요'}
+            </Text>
+            <Text style={styles.processingDescription}>잠시만 기다려 주세요.</Text>
+            {!!voiceProcessing.transcript && (
+              <View style={styles.transcriptPreview}>
+                <Text style={styles.transcriptLabel}>인식된 내용</Text>
+                <Text style={styles.transcriptText}>{voiceProcessing.transcript}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      )}
     </SafeAreaView>
   );
 }
 
 export default function App() {
-  return <SafeAreaProvider><AuthProvider><MemoryPalApp /></AuthProvider></SafeAreaProvider>;
+  const [darkMode, setDarkMode] = useState(false);
+
+  useEffect(() => {
+    void AsyncStorage.getItem('memorypal.darkMode').then((stored) => setDarkMode(stored === 'true'));
+  }, []);
+
+  return (
+    <ThemeProvider darkMode={darkMode}>
+      <SafeAreaProvider><AuthProvider><MemoryPalApp darkMode={darkMode} onDarkModeChange={setDarkMode} /></AuthProvider></SafeAreaProvider>
+    </ThemeProvider>
+  );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#F0ECF4', alignItems: 'center' },
+const createStyles = (colors: import('./src/theme').ThemeColors) => StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.background, alignItems: 'center' },
   phone: { flex: 1, width: '100%', maxWidth: 560, backgroundColor: colors.background },
   screen: { flex: 1 },
+  chatScreen: { flex: 1 },
+  hiddenScreen: { display: 'none' },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  processingOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 100, elevation: 100, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  processingShade: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(15, 10, 22, 0.48)' },
+  processingCard: { width: '100%', maxWidth: 440, alignItems: 'center', borderRadius: 26, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingHorizontal: 24, paddingVertical: 28 },
+  processingTitle: { color: colors.ink, fontSize: 19, fontWeight: '900', marginTop: 16 },
+  processingDescription: { color: colors.muted, fontSize: 12, marginTop: 6 },
+  transcriptPreview: { width: '100%', marginTop: 20, borderRadius: 18, backgroundColor: colors.primarySoft, padding: 16 },
+  transcriptLabel: { color: colors.primaryDark, fontSize: 10, fontWeight: '900', marginBottom: 7 },
+  transcriptText: { color: colors.ink, fontSize: 15, lineHeight: 22, fontWeight: '600' },
 });

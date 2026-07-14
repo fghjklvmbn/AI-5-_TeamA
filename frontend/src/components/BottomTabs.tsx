@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { colors } from '../theme';
+import { useTheme, type ThemeColors } from '../theme';
 
 export type Tab = 'home' | 'chat' | 'memory' | 'settings';
 
@@ -13,6 +13,8 @@ const tabs: { key: Tab; icon: string; label: string }[] = [
 ];
 
 export function BottomTabs({ current, onChange }: { current: Tab; onChange: (tab: Tab) => void }) {
+  const { colors } = useTheme();
+  const styles = createStyles(colors);
   return (
     <View style={styles.bar}>
       {tabs.map((tab) => {
@@ -34,7 +36,7 @@ export function BottomTabs({ current, onChange }: { current: Tab; onChange: (tab
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: ThemeColors) => StyleSheet.create({
   bar: {
     minHeight: 72,
     paddingHorizontal: 10,

@@ -51,6 +51,25 @@ class MemoryEngineTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(self.db.list_memories(self.user["id"]), [])
 
+    def test_unrelated_high_importance_memory_is_completely_excluded(self):
+        self.engine.remember(self.user["id"], self.session["id"], MemoryCandidate("schedule", "다음 주 화요일 치과 예약", 1.0, 1.0))
+        result = self.engine.retrieve(self.user["id"], "파이썬 반복문을 설명해줘")
+        self.assertEqual(result, [])
+        self.assertEqual(self.engine.as_prompt(result), "")
+
+    def test_memory_type_appears_when_user_asks_to_recall_it(self):
+        self.engine.remember(self.user["id"], self.session["id"], MemoryCandidate("preference", "나는 따뜻한 라테를 좋아해", 0.9, 0.8))
+        self.engine.remember(self.user["id"], self.session["id"], MemoryCandidate("schedule", "금요일 오후에 병원 예약", 0.9, 0.8))
+        result = self.engine.retrieve(self.user["id"], "내가 좋아하는 음료가 뭐였지?")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["memory_type"], "preference")
+
+    def test_related_question_can_use_memory_without_recall_phrase(self):
+        self.engine.remember(self.user["id"], self.session["id"], MemoryCandidate("schedule", "금요일 오후에 치과 예약이 있어", 0.9, 0.8))
+        result = self.engine.retrieve(self.user["id"], "치과 예약은 언제야?")
+        self.assertEqual(len(result), 1)
+        self.assertIn("금요일", result[0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { colors, shadow } from '../theme';
+import { shadow, useTheme, type ThemeColors } from '../theme';
 
 type Props = {
   recording: boolean;
@@ -12,6 +12,8 @@ type Props = {
 };
 
 export function RecordingOrb({ recording, amplitude, disabled, onPress }: Props) {
+  const { colors, darkMode } = useTheme();
+  const styles = createStyles(colors);
   const pulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -53,7 +55,7 @@ export function RecordingOrb({ recording, amplitude, disabled, onPress }: Props)
         style={({ pressed }) => [styles.button, pressed && styles.pressed, disabled && styles.disabled]}
       >
         <LinearGradient
-          colors={recording ? ['#8F6EE8', '#6842CC'] : ['#F3EEFF', '#DCD0FB']}
+          colors={recording ? ['#8F6EE8', '#6842CC'] : darkMode ? ['#453661', '#302641'] : ['#F3EEFF', '#DCD0FB']}
           style={styles.gradient}
         >
           <Text style={[styles.mic, recording && styles.micActive]}>{recording ? '■' : '●'}</Text>
@@ -66,12 +68,12 @@ export function RecordingOrb({ recording, amplitude, disabled, onPress }: Props)
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { width: 246, height: 246, alignItems: 'center', justifyContent: 'center' },
-  ring: { position: 'absolute', width: 186, height: 186, borderRadius: 999 },
-  ringOuter: { backgroundColor: '#EEE7FF', opacity: 0.55 },
-  ringInner: { backgroundColor: '#CDBBFA' },
-  button: { width: 158, height: 158, borderRadius: 999, overflow: 'hidden', ...shadow },
+const createStyles = (colors: ThemeColors) => StyleSheet.create({
+  wrap: { width: 296, height: 296, alignItems: 'center', justifyContent: 'center' },
+  ring: { position: 'absolute', width: 236, height: 236, borderRadius: 999 },
+  ringOuter: { backgroundColor: colors.primarySoft, opacity: 0.55 },
+  ringInner: { backgroundColor: colors.lilac },
+  button: { width: 208, height: 208, borderRadius: 999, overflow: 'hidden', ...shadow },
   pressed: { transform: [{ scale: 0.97 }] },
   disabled: { opacity: 0.55 },
   gradient: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
