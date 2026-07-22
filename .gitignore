@@ -4,6 +4,7 @@
 **/.env.*
 !**/.env.example
 !**/.env.production.example
+!**/.env.scale.example
 **/__pycache__/
 **/.pytest_cache/
 **/.venv/
@@ -14,7 +15,9 @@
 backend/gateway/data/
 backend/STT_backend_server/uploads/
 backend/TTS_Server/outputs/
+backend/TTS_Server/reference_cache/
 backend/archive_service/voice_uploads/
+backend/archive_service/private_voice_uploads/
 backend.zip
 
 # Expo / Node
@@ -25,6 +28,9 @@ frontend/.expo-test-dist/
 frontend/.expo-web.*.log
 frontend/.static-web.*.log
 frontend/.static-proxy.*.log
+admin/node_modules/
+admin/dist/
+admin/*.tsbuildinfo
 npm-debug.log*
 .runtime/
 

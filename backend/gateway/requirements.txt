@@ -1,7 +1,10 @@
+ddgs>=9.14,<10
 fastapi>=0.115,<1
 httpx>=0.27,<1
 pydantic>=2.8,<3
 python-dotenv>=1.0,<2
 python-multipart>=0.0.9,<1
 pypdf>=5,<7
+psycopg[binary,pool]>=3.2,<4
+redis>=5,<7
 uvicorn[standard]>=0.30,<1

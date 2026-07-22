@@ -7,6 +7,8 @@ import type {
   MemoryItem,
   Message,
   Persona,
+  PortraitResponse,
+  ReasoningEffort,
   Session,
   User,
   Voice,
@@ -80,6 +82,33 @@ export const api = {
   logout(token: string) {
     return request<void>('/auth/logout', { method: 'POST' }, token);
   },
+  updateProfile(token: string, displayName: string) {
+    return request<User>(
+      '/auth/profile',
+      { method: 'PATCH', body: JSON.stringify({ display_name: displayName }) },
+      token,
+    );
+  },
+  changePassword(token: string, currentPassword: string, newPassword: string) {
+    return request<void>(
+      '/auth/password',
+      {
+        method: 'POST',
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      },
+      token,
+    );
+  },
+  deleteAccount(token: string, currentPassword: string) {
+    return request<void>(
+      '/auth/account',
+      {
+        method: 'DELETE',
+        body: JSON.stringify({ current_password: currentPassword, confirmation: 'DELETE' }),
+      },
+      token,
+    );
+  },
   sessions(token: string) {
     return request<Session[]>('/sessions', {}, token);
   },
@@ -126,6 +155,9 @@ export const api = {
     speak = true,
     casualMode = false,
     persona: Persona = 'default',
+    internetEnabled = false,
+    thinkingMode = false,
+    reasoningEffort: ReasoningEffort = 'medium',
   ) {
     return request<ChatResponse>(
       '/chat/messages',
@@ -138,6 +170,9 @@ export const api = {
           speak,
           casual_mode: casualMode,
           persona,
+          internet_enabled: internetEnabled,
+          thinking_mode: thinkingMode,
+          reasoning_effort: reasoningEffort,
         }),
       },
       token,
@@ -150,6 +185,9 @@ export const api = {
     speak = true,
     casualMode = false,
     persona: Persona = 'default',
+    internetEnabled = false,
+    thinkingMode = false,
+    reasoningEffort: ReasoningEffort = 'medium',
   ) {
     return request<ChatResponse>(
       `/chat/messages/${messageId}/regenerate`,
@@ -160,7 +198,20 @@ export const api = {
           speak,
           casual_mode: casualMode,
           persona,
+          internet_enabled: internetEnabled,
+          thinking_mode: thinkingMode,
+          reasoning_effort: reasoningEffort,
         }),
+      },
+      token,
+    );
+  },
+  messageAudio(token: string, messageId: string, voiceId?: string) {
+    return request<Message>(
+      `/chat/messages/${messageId}/audio`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ voice_id: voiceId }),
       },
       token,
     );
@@ -177,6 +228,16 @@ export const api = {
   },
   deleteMemory(token: string, id: string) {
     return request<void>(`/memories/${id}`, { method: 'DELETE' }, token);
+  },
+  portrait(token: string) {
+    return request<PortraitResponse>('/portrait', {}, token);
+  },
+  generatePortrait(token: string, persona: Persona) {
+    return request<PortraitResponse>(
+      '/portrait/generate',
+      { method: 'POST', body: JSON.stringify({ persona }) },
+      token,
+    );
   },
   voices(token: string) {
     return request<Voice[]>('/voices', {}, token);

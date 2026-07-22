@@ -61,6 +61,25 @@ export type Attachment = {
 
 export type Persona = 'default' | 'emotional_companion';
 
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+
+export type PortraitStatus = 'empty' | 'queued' | 'analyzing' | 'complete' | 'failed';
+
+export type PortraitResponse = {
+  status: PortraitStatus;
+  title?: string | null;
+  summary?: string | null;
+  accuracy_percent?: number | null;
+  analyzed_sessions?: number;
+  analyzed_messages?: number;
+  progress_percent?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  error?: string | null;
+  persona?: Persona | null;
+  vector_method?: string | null;
+};
+
 export type VoiceStatus = {
   has_personalized_voice: boolean;
   personalized_voice_count: number;

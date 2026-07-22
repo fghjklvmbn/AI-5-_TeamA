@@ -71,6 +71,7 @@ class MemoryEngine:
         user_id: str,
         session_id: str | None,
         candidate: MemoryCandidate,
+        expected_auth_version: int | None = None,
     ):
         memory_type = candidate.memory_type if candidate.memory_type in MEMORY_TYPES else "fact"
         content = re.sub(r"\s+", " ", candidate.content.strip())[:1000]
@@ -85,6 +86,7 @@ class MemoryEngine:
             keywords=" ".join(self.keywords(content)),
             confidence=max(0.0, min(1.0, candidate.confidence)),
             importance=max(0.0, min(1.0, candidate.importance)),
+            expected_auth_version=expected_auth_version,
         )
 
     def remember_many(
@@ -92,6 +94,7 @@ class MemoryEngine:
         user_id: str,
         session_id: str | None,
         candidates: Iterable[MemoryCandidate],
+        expected_auth_version: int | None = None,
     ) -> list:
         result = []
         seen: set[str] = set()
@@ -100,7 +103,10 @@ class MemoryEngine:
             if normalized in seen:
                 continue
             seen.add(normalized)
-            memory = self.remember(user_id, session_id, candidate)
+            memory = self.remember(
+                user_id, session_id, candidate,
+                expected_auth_version=expected_auth_version,
+            )
             if memory is not None:
                 result.append(memory)
         return result

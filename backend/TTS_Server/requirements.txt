@@ -4,3 +4,4 @@ uvicorn
 # transformers
 # accelerate
 soundfile
+faster-qwen3-tts==0.3.0

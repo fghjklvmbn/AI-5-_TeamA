@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '../api';
 import { unlockWebAudio } from '../audioPlayback';
 import { RecordingOrb } from '../components/RecordingOrb';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
-import type { ChatResponse, Persona, User, Voice } from '../types';
+import type { ChatResponse, Persona, ReasoningEffort, User, Voice } from '../types';
 
 type Props = {
   token: string;
@@ -14,9 +14,14 @@ type Props = {
   casualMode: boolean;
   persona: Persona;
   voiceReplyEnabled: boolean;
+  internetEnabled: boolean;
+  thinkingMode: boolean;
+  reasoningEffort: ReasoningEffort;
   onPersonaChange: (persona: Persona) => void;
   onConversation: (response: ChatResponse) => void;
   onVoiceProcessingChange: (active: boolean, transcript?: string) => void;
+  onOpenAccount: () => void;
+  onLogout: () => Promise<void>;
 };
 
 type DropdownOption = { id: string; label: string; detail?: string };
@@ -64,13 +69,14 @@ function DropdownField({
   );
 }
 
-export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled, onPersonaChange, onConversation, onVoiceProcessingChange }: Props) {
+export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled, internetEnabled, thinkingMode, reasoningEffort, onPersonaChange, onConversation, onVoiceProcessingChange, onOpenAccount, onLogout }: Props) {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const recorder = useLiveRecorder(token);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = useState<string>();
   const [processing, setProcessing] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [status, setStatus] = useState('가운데 버튼을 누르고 편하게 말해 보세요.');
 
   const voiceOptions: DropdownOption[] = (voices.length
@@ -93,6 +99,15 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
     }).catch(() => setVoices([]));
   }, [token]);
 
+  useEffect(() => {
+    if (!profileMenuOpen || Platform.OS !== 'web' || typeof document === 'undefined') return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setProfileMenuOpen(false);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [profileMenuOpen]);
+
   const toggleRecording = async () => {
     if (recorder.isRecording) unlockWebAudio();
     try {
@@ -111,7 +126,10 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
       }
       onVoiceProcessingChange(true, transcript);
       // Voice conversations started from Home always begin in a fresh chat session.
-      const response = await api.chat(token, transcript, undefined, voiceId, true, casualMode, persona);
+      const response = await api.chat(
+        token, transcript, undefined, voiceId, voiceReplyEnabled, casualMode, persona, internetEnabled, thinkingMode,
+        reasoningEffort,
+      );
       setStatus('답변이 준비됐어요.');
       onConversation(response);
     } catch (reason) {
@@ -122,14 +140,22 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
     }
   };
 
-  return (
+  return (<>
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
         <View>
           <Text style={styles.greeting}>안녕하세요, {user.display_name}님</Text>
           <Text style={styles.headline}>오늘은 어떤 이야기를{`\n`}나눠볼까요?</Text>
         </View>
-        <View style={styles.avatar}><Text style={styles.avatarText}>{user.display_name.slice(0, 1)}</Text></View>
+        <Pressable
+          accessibilityLabel="프로필 메뉴 열기"
+          accessibilityRole="button"
+          onPress={() => setProfileMenuOpen((current) => !current)}
+          style={({ pressed }) => [styles.avatar, pressed && styles.avatarPressed]}
+        >
+          <Text style={styles.avatarText}>{user.display_name.slice(0, 1)}</Text>
+          <View style={styles.profileIndicator} />
+        </Pressable>
       </View>
 
       <View style={styles.orbArea}>
@@ -172,7 +198,40 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
         </View>
       </View>
     </ScrollView>
-  );
+    <Modal animationType="fade" onRequestClose={() => setProfileMenuOpen(false)} transparent visible={profileMenuOpen}>
+      <Pressable accessibilityLabel="프로필 메뉴 닫기" onPress={() => setProfileMenuOpen(false)} style={styles.profileOverlay}>
+        <View pointerEvents="box-none" style={styles.profileViewport}>
+          <Pressable accessibilityRole="menu" onPress={(event) => event.stopPropagation()} style={styles.profileMenu}>
+            <View style={styles.profileSummary}>
+              <View style={styles.profileMenuAvatar}><Text style={styles.profileMenuAvatarText}>{user.display_name.slice(0, 1)}</Text></View>
+              <View style={styles.profileSummaryCopy}>
+                <Text numberOfLines={1} style={styles.profileName}>{user.display_name}</Text>
+                <Text numberOfLines={1} style={styles.profileEmail}>{user.email}</Text>
+              </View>
+            </View>
+            <View style={styles.profileDivider} />
+            <Pressable
+              accessibilityRole="menuitem"
+              onPress={() => { setProfileMenuOpen(false); onOpenAccount(); }}
+              style={({ pressed }) => [styles.profileAction, pressed && styles.profileActionPressed]}
+            >
+              <View style={styles.profileActionIcon}><Text style={styles.profileActionIconText}>✎</Text></View>
+              <View style={styles.profileActionCopy}><Text style={styles.profileActionTitle}>정보 변경</Text><Text style={styles.profileActionDescription}>닉네임과 비밀번호 관리</Text></View>
+              <Text style={styles.profileChevron}>›</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="menuitem"
+              onPress={() => { setProfileMenuOpen(false); void onLogout(); }}
+              style={({ pressed }) => [styles.profileAction, pressed && styles.profileActionPressed]}
+            >
+              <View style={[styles.profileActionIcon, styles.logoutIcon]}><Text style={styles.logoutIconText}>↪</Text></View>
+              <View style={styles.profileActionCopy}><Text style={styles.logoutTitle}>로그아웃</Text><Text style={styles.profileActionDescription}>현재 기기에서 안전하게 종료</Text></View>
+            </Pressable>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
+  </>);
 }
 
 const createStyles = (colors: ThemeColors) => StyleSheet.create({
@@ -180,8 +239,31 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   greeting: { color: colors.primaryDark, fontSize: 13, fontWeight: '700', marginBottom: 6 },
   headline: { color: colors.ink, fontSize: 27, lineHeight: 35, fontWeight: '900', letterSpacing: -0.8 },
-  avatar: { width: 42, height: 42, borderRadius: 16, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' },
+  avatar: { width: 42, height: 42, borderRadius: 16, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center', position: 'relative', borderWidth: 1, borderColor: colors.lilac },
+  avatarPressed: { opacity: 0.72, transform: [{ scale: 0.97 }] },
   avatarText: { color: colors.primaryDark, fontWeight: '800', fontSize: 17 },
+  profileIndicator: { position: 'absolute', right: -1, bottom: -1, width: 11, height: 11, borderRadius: 99, borderWidth: 2, borderColor: colors.surface, backgroundColor: colors.success },
+  profileOverlay: { flex: 1, alignItems: 'center', backgroundColor: 'rgba(16, 11, 23, 0.22)' },
+  profileViewport: { width: '100%', maxWidth: 560, flex: 1, position: 'relative' },
+  profileMenu: { position: 'absolute', top: 69, right: 20, width: 258, borderRadius: 20, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 10, shadowColor: '#1A1025', shadowOffset: { width: 0, height: 13 }, shadowOpacity: 0.2, shadowRadius: 28, elevation: 20 },
+  profileSummary: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 7, paddingVertical: 8 },
+  profileMenuAvatar: { width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primarySoft },
+  profileMenuAvatarText: { color: colors.primaryDark, fontSize: 15, fontWeight: '900' },
+  profileSummaryCopy: { flex: 1, minWidth: 0 },
+  profileName: { color: colors.ink, fontSize: 13, fontWeight: '900' },
+  profileEmail: { color: colors.muted, fontSize: 9, marginTop: 3 },
+  profileDivider: { height: 1, backgroundColor: colors.border, marginVertical: 6 },
+  profileAction: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, borderRadius: 13, paddingHorizontal: 8, paddingVertical: 7 },
+  profileActionPressed: { backgroundColor: colors.subtle },
+  profileActionIcon: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primarySoft },
+  profileActionIconText: { color: colors.primaryDark, fontSize: 15, fontWeight: '900' },
+  profileActionCopy: { flex: 1 },
+  profileActionTitle: { color: colors.ink, fontSize: 12, fontWeight: '900' },
+  profileActionDescription: { color: colors.muted, fontSize: 8, marginTop: 3 },
+  profileChevron: { color: colors.muted, fontSize: 22, fontWeight: '400' },
+  logoutIcon: { backgroundColor: colors.dangerSoft },
+  logoutIconText: { color: colors.danger, fontSize: 17, fontWeight: '900' },
+  logoutTitle: { color: colors.danger, fontSize: 12, fontWeight: '900' },
   orbArea: { alignItems: 'center', marginTop: 34 },
   spinner: { position: 'absolute', top: 106 },
   status: { color: colors.muted, textAlign: 'center', fontSize: 13, marginTop: 4, minHeight: 38, maxWidth: 300, lineHeight: 19 },

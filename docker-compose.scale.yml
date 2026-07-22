@@ -1,0 +1,140 @@
+name: memorypal-scale
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${MEMORYPAL_POSTGRES_DB:-memorypal}
+      POSTGRES_USER: ${MEMORYPAL_POSTGRES_USER:-memorypal_owner}
+      POSTGRES_PASSWORD: ${MEMORYPAL_POSTGRES_PASSWORD:?Set MEMORYPAL_POSTGRES_PASSWORD in .env.scale}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    command:
+      - postgres
+      - -c
+      - max_connections=${MEMORYPAL_POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${MEMORYPAL_POSTGRES_SHARED_BUFFERS:-256MB}
+      - -c
+      - wal_compression=on
+      - -c
+      - timezone=UTC
+    ports:
+      - "127.0.0.1:${MEMORYPAL_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - memorypal_postgres_data:/var/lib/postgresql/data
+      - ./deploy/scale/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+    networks:
+      - memorypal_data
+
+  redis-acl-init:
+    image: redis:7-alpine
+    restart: "no"
+    environment:
+      REDIS_USER: ${MEMORYPAL_REDIS_USER:-memorypal}
+      REDIS_PASSWORD: ${MEMORYPAL_REDIS_PASSWORD:?Set MEMORYPAL_REDIS_PASSWORD in .env.scale}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$REDIS_USER" in
+          default|*[!a-zA-Z0-9_-]*) echo "REDIS_USER must be a non-default alphanumeric name" >&2; exit 1 ;;
+        esac
+        password_hash="$$(printf '%s' "$$REDIS_PASSWORD" | sha256sum)"
+        password_hash="$${password_hash%% *}"
+        umask 077
+        printf 'user default off\nuser %s reset on #%s ~* &* +@all\n' "$$REDIS_USER" "$$password_hash" > /acl/users.acl
+        chown redis:redis /acl/users.acl
+    volumes:
+      - memorypal_redis_acl:/acl
+    network_mode: none
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    depends_on:
+      redis-acl-init:
+        condition: service_completed_successfully
+    environment:
+      REDIS_USER: ${MEMORYPAL_REDIS_USER:-memorypal}
+      REDIS_PASSWORD: ${MEMORYPAL_REDIS_PASSWORD:?Set MEMORYPAL_REDIS_PASSWORD in .env.scale}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${MEMORYPAL_REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - noeviction
+      - --aclfile
+      - /usr/local/etc/redis/users.acl
+    ports:
+      - "127.0.0.1:${MEMORYPAL_REDIS_PORT:-6380}:6379"
+    volumes:
+      - memorypal_redis_data:/data
+      - memorypal_redis_acl:/usr/local/etc/redis:ro
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli --user \"$$REDIS_USER\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 20s
+    networks:
+      - memorypal_data
+
+  migrate:
+    image: pgvector/pgvector:pg16
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${MEMORYPAL_POSTGRES_DB:-memorypal}
+      PGUSER: ${MEMORYPAL_POSTGRES_USER:-memorypal_owner}
+      PGPASSWORD: ${MEMORYPAL_POSTGRES_PASSWORD:?Set MEMORYPAL_POSTGRES_PASSWORD in .env.scale}
+      PGOPTIONS: -c search_path=memorypal_gateway,public
+    volumes:
+      - ./deploy/scale/postgres/migrations:/migrations:ro
+      - ./backend/gateway/migrations:/gateway-runtime:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for migration in /gateway-runtime/*.sql /migrations/*.sql; do
+          [ -f "$$migration" ] || continue
+          case "$$migration" in
+            /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            *) version="$$(basename "$$migration")" ;;
+          esac
+          applied="$$(psql --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT 1 FROM memorypal_meta.schema_migrations WHERE version = '$$version'")"
+          if [ "$$applied" = "1" ]; then
+            echo "Skipping already applied migration: $$version"
+            continue
+          fi
+          echo "Applying migration: $$version"
+          psql --set ON_ERROR_STOP=1 --file "$$migration"
+          psql --set ON_ERROR_STOP=1 --command "INSERT INTO memorypal_meta.schema_migrations (version) VALUES ('$$version') ON CONFLICT (version) DO NOTHING"
+        done
+    networks:
+      - memorypal_data
+
+volumes:
+  memorypal_postgres_data:
+  memorypal_redis_data:
+  memorypal_redis_acl:
+
+networks:
+  memorypal_data:
+    driver: bridge

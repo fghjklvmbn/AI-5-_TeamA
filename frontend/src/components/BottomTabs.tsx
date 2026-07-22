@@ -3,12 +3,13 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme, type ThemeColors } from '../theme';
 
-export type Tab = 'home' | 'chat' | 'memory' | 'settings';
+export type Tab = 'home' | 'chat' | 'memory' | 'portrait' | 'settings';
 
 const tabs: { key: Tab; icon: string; label: string }[] = [
   { key: 'home', icon: '◉', label: '메인' },
   { key: 'chat', icon: '▱', label: '채팅' },
   { key: 'memory', icon: '◇', label: '기억' },
+  { key: 'portrait', icon: '◐', label: '자화상' },
   { key: 'settings', icon: '⚙', label: '설정' },
 ];
 

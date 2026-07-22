@@ -46,6 +46,7 @@ class TokenClaims:
     email: str
     jti: str
     expires_at: int
+    auth_version: int
 
 
 def create_access_token(
@@ -53,6 +54,7 @@ def create_access_token(
     email: str,
     secret: str,
     ttl_minutes: int,
+    auth_version: int = 1,
 ) -> tuple[str, TokenClaims]:
     now = int(time.time())
     claims = TokenClaims(
@@ -60,6 +62,7 @@ def create_access_token(
         email=email,
         jti=str(uuid.uuid4()),
         expires_at=now + ttl_minutes * 60,
+        auth_version=max(1, int(auth_version)),
     )
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
@@ -68,6 +71,7 @@ def create_access_token(
         "jti": claims.jti,
         "iat": now,
         "exp": claims.expires_at,
+        "ver": claims.auth_version,
         "iss": "memorypal",
         "aud": "memorypal-mobile",
     }
@@ -107,9 +111,16 @@ def decode_access_token(token: str, secret: str, now: int | None = None) -> Toke
     if int(payload["exp"]) <= (int(time.time()) if now is None else now):
         raise TokenError("로그인이 만료되었습니다.")
 
+    try:
+        auth_version = int(payload.get("ver", 1))
+    except (TypeError, ValueError) as exc:
+        raise TokenError("유효하지 않은 인증 버전입니다.") from exc
+    if auth_version < 1:
+        raise TokenError("유효하지 않은 인증 버전입니다.")
     return TokenClaims(
         user_id=str(payload["sub"]),
         email=str(payload["email"]),
         jti=str(payload["jti"]),
         expires_at=int(payload["exp"]),
+        auth_version=auth_version,
     )

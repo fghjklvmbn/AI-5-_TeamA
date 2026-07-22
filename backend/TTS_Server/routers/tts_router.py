@@ -20,7 +20,9 @@ def health():
 
     return {
         "status":
-        "ok"
+        "ok",
+        "engine":
+        tts_service.engine
     }
 
 class TTSRequest(

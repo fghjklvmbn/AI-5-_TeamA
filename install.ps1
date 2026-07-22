@@ -9,6 +9,7 @@ $Venv = Join-Path $Root ".venv"
 $VenvPython = Join-Path $Venv "Scripts\python.exe"
 $Gateway = Join-Path $Root "backend\gateway"
 $Frontend = Join-Path $Root "frontend"
+$Admin = Join-Path $Root "admin"
 $RootEnv = Join-Path $Root ".env"
 $Utf8NoBom = [Text.UTF8Encoding]::new($false)
 
@@ -114,6 +115,23 @@ try {
         Write-Step "Frontend 배포 번들 생성"
         & $NpmCommand run build:web
         Assert-LastExit "Frontend 빌드"
+    } finally {
+        Pop-Location
+    }
+
+    Write-Step "관리자 페이지 의존성 설치"
+    Push-Location $Admin
+    try {
+        if (Test-Path -LiteralPath (Join-Path $Admin "package-lock.json")) {
+            & $NpmCommand ci
+        } else {
+            & $NpmCommand install
+        }
+        Assert-LastExit "관리자 페이지 패키지 설치"
+
+        Write-Step "관리자 페이지 배포 번들 생성"
+        & $NpmCommand run build
+        Assert-LastExit "관리자 페이지 빌드"
     } finally {
         Pop-Location
     }

@@ -11,7 +11,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, Tex
 
 import { api } from '../api';
 import { useTheme, type ThemeColors } from '../theme';
-import type { Persona, User, Voice, VoiceStatus } from '../types';
+import type { Persona, ReasoningEffort, User, Voice, VoiceStatus } from '../types';
 
 function ChoiceRow({ label, options }: { label: string; options: string[] }) {
   const { colors } = useTheme();
@@ -38,10 +38,17 @@ type Props = {
   persona: Persona;
   darkMode: boolean;
   voiceReplyEnabled: boolean;
+  internetEnabled: boolean;
+  thinkingMode: boolean;
+  reasoningEffort: ReasoningEffort;
   onCasualModeChange: (enabled: boolean) => void;
   onPersonaChange: (persona: Persona) => void;
   onDarkModeChange: (enabled: boolean) => void;
   onVoiceReplyChange: (enabled: boolean) => void;
+  onInternetEnabledChange: (enabled: boolean) => void;
+  onThinkingModeChange: (enabled: boolean) => void;
+  onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  onOpenAccount: () => void;
   logout: () => Promise<void>;
 };
 
@@ -52,10 +59,17 @@ export function SettingsScreen({
   persona,
   darkMode,
   voiceReplyEnabled,
+  internetEnabled,
+  thinkingMode,
+  reasoningEffort,
   onCasualModeChange,
   onPersonaChange,
   onDarkModeChange,
   onVoiceReplyChange,
+  onInternetEnabledChange,
+  onThinkingModeChange,
+  onReasoningEffortChange,
+  onOpenAccount,
   logout,
 }: Props) {
   const { colors } = useTheme();
@@ -152,6 +166,13 @@ export function SettingsScreen({
           <Text style={styles.name}>{user.display_name}</Text>
           <Text style={styles.email}>{user.email}</Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenAccount}
+          style={({ pressed }) => [styles.accountEditButton, pressed && styles.accountEditButtonPressed]}
+        >
+          <Text style={styles.accountEditButtonText}>정보 변경</Text>
+        </Pressable>
       </View>
 
       <Text style={styles.sectionTitle}>화면 설정</Text>
@@ -217,17 +238,94 @@ export function SettingsScreen({
         </View>
       </View>
 
+      <Text style={styles.sectionTitle}>정보 검색</Text>
+      <View style={styles.card}>
+        <View style={styles.switchRow}>
+          <View style={styles.switchCopy}>
+            <Text style={styles.rowLabel}>답변시 인터넷 사용</Text>
+            <Text style={styles.switchDescription}>
+              {internetEnabled
+                ? '최신 정보가 필요하면 웹을 검색해 답변에 반영해요.'
+                : '모델 지식, 기억과 첨부파일만 사용해 답변해요.'}
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel="답변시 인터넷 사용"
+            onValueChange={onInternetEnabledChange}
+            thumbColor="#FFFFFF"
+            trackColor={{ false: colors.border, true: colors.primary }}
+            value={internetEnabled}
+          />
+        </View>
+      </View>
+
+      <Text style={styles.sectionTitle}>AI 응답 설정</Text>
+      <View style={styles.card}>
+        <View style={styles.switchRow}>
+          <View style={styles.switchCopy}>
+            <Text style={styles.rowLabel}>생각 모드</Text>
+            <Text style={styles.switchDescription}>
+              {thinkingMode
+                ? '답변 전에 충분히 생각해 더 신중하게 답해요. 응답 시간이 길어질 수 있어요.'
+                : '빠르게 답변해요. 필요할 때만 생각 모드를 켜 주세요.'}
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel="생각 모드"
+            onValueChange={onThinkingModeChange}
+            thumbColor="#FFFFFF"
+            trackColor={{ false: colors.border, true: colors.primary }}
+            value={thinkingMode}
+          />
+        </View>
+        <View style={styles.divider} />
+        <View style={!thinkingMode && styles.reasoningDisabled}>
+          <Text style={styles.rowLabel}>추론 강도</Text>
+          <View style={[styles.choiceRow, styles.reasoningChoices]}>
+            {([
+              { value: 'low', label: '낮음' },
+              { value: 'medium', label: '중간' },
+              { value: 'high', label: '높음' },
+            ] as const).map((option) => (
+              <Pressable
+                accessibilityLabel={`추론 강도 ${option.label}`}
+                accessibilityState={{ disabled: !thinkingMode, selected: reasoningEffort === option.value }}
+                disabled={!thinkingMode}
+                key={option.value}
+                onPress={() => onReasoningEffortChange(option.value)}
+                style={[styles.choice, reasoningEffort === option.value && styles.choiceActive]}
+              >
+                <Text style={[styles.choiceText, reasoningEffort === option.value && styles.choiceTextActive]}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={styles.reasoningHint}>
+            {!thinkingMode
+              ? '생각 모드를 켜면 추론 강도를 선택할 수 있어요.'
+              : reasoningEffort === 'low'
+                ? '간단한 질문을 빠르게 검토해 답해요.'
+                : reasoningEffort === 'high'
+                  ? '더 깊게 검토해 답하며 응답 시간이 가장 길 수 있어요.'
+                  : '속도와 신중함의 균형을 맞춰 답해요.'}
+          </Text>
+        </View>
+      </View>
+
       <Text style={styles.sectionTitle}>음성 답변 설정</Text>
       <View style={[styles.card, styles.voiceReplyCard]}>
         <View style={styles.switchRow}>
           <View style={styles.switchCopy}>
-            <Text style={styles.rowLabel}>음성으로 바로 답하기</Text>
+            <Text style={styles.rowLabel}>답변 음성 자동 출력</Text>
             <Text style={styles.switchDescription}>
-              {voiceReplyEnabled ? '답변이 도착하면 음성을 자동으로 재생해요.' : '음성으로 듣기 버튼을 눌러 재생해요.'}
+              {voiceReplyEnabled
+                ? '답변과 음성을 함께 생성하고, 도착하면 자동으로 재생해요.'
+                : '답변은 텍스트만 생성해요. 필요할 때 ‘음성으로 듣기’를 눌러 즉시 만들 수 있어요.'}
             </Text>
           </View>
           <Switch
-            accessibilityLabel="음성으로 바로 답하기"
+            accessibilityLabel="답변 음성 자동 출력"
             onValueChange={onVoiceReplyChange}
             thumbColor="#FFFFFF"
             trackColor={{ false: colors.border, true: colors.primary }}
@@ -362,6 +460,9 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   avatarText: { color: '#FFFFFF', fontSize: 19, fontWeight: '900' },
   name: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   email: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  accountEditButton: { minHeight: 36, paddingHorizontal: 13, borderRadius: 12, borderWidth: 1, borderColor: colors.lilac, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
+  accountEditButtonPressed: { opacity: 0.74, transform: [{ scale: 0.98 }] },
+  accountEditButtonText: { color: colors.primaryDark, fontSize: 11, fontWeight: '900' },
   sectionTitle: { color: colors.ink, fontSize: 14, fontWeight: '900', marginTop: 25, marginBottom: 10 },
   sectionHeader: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
   addVoiceButton: { marginBottom: 7, borderRadius: 999, backgroundColor: colors.primarySoft, paddingHorizontal: 13, paddingVertical: 8 },
@@ -407,6 +508,9 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   choiceActive: { backgroundColor: colors.primarySoft },
   choiceText: { color: colors.muted, fontSize: 11, fontWeight: '700' },
   choiceTextActive: { color: colors.primaryDark },
+  reasoningChoices: { marginTop: 10 },
+  reasoningDisabled: { opacity: 0.45 },
+  reasoningHint: { color: colors.muted, fontSize: 10, lineHeight: 15, marginTop: 8 },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: 17 },
   voiceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
   personalizationStatus: { borderRadius: 14, backgroundColor: colors.primarySoft, padding: 13, marginBottom: 8 },

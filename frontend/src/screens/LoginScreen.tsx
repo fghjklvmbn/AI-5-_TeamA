@@ -17,7 +17,7 @@ import { shadow, useTheme, type ThemeColors } from '../theme';
 export function LoginScreen() {
   const { colors, darkMode } = useTheme();
   const styles = createStyles(colors);
-  const { login, register } = useAuth();
+  const { login, register, notice, clearNotice } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -26,6 +26,7 @@ export function LoginScreen() {
   const [error, setError] = useState('');
 
   const submit = async () => {
+    clearNotice();
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
       setError('올바른 이메일 주소를 입력해 주세요.');
       return;
@@ -68,7 +69,7 @@ export function LoginScreen() {
             {(['login', 'register'] as const).map((item) => (
               <Pressable
                 key={item}
-                onPress={() => { setMode(item); setError(''); }}
+                onPress={() => { setMode(item); setError(''); clearNotice(); }}
                 style={[styles.switch, mode === item && styles.switchActive]}
               >
                 <Text style={[styles.switchText, mode === item && styles.switchTextActive]}>
@@ -116,6 +117,7 @@ export function LoginScreen() {
               value={password}
             />
           </View>
+          {!!notice && <Text style={styles.success}>{notice}</Text>}
           {!!error && <Text style={styles.error}>{error}</Text>}
           <Pressable
             disabled={busy || !email || !password || (mode === 'register' && !name)}
@@ -152,6 +154,7 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   label: { color: colors.ink, fontSize: 13, fontWeight: '700', marginBottom: 7 },
   input: { height: 52, borderWidth: 1, borderColor: colors.border, borderRadius: 14, paddingHorizontal: 15, color: colors.ink, backgroundColor: colors.input, fontSize: 15 },
   error: { color: colors.danger, marginBottom: 13, fontSize: 13 },
+  success: { color: colors.success, backgroundColor: colors.primarySoft, borderRadius: 12, padding: 12, marginBottom: 13, fontSize: 12, lineHeight: 18 },
   submit: { height: 54, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: 3 },
   submitText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
   privacy: { color: colors.muted, fontSize: 11, textAlign: 'center', marginTop: 14 },

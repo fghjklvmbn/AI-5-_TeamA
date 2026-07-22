@@ -51,6 +51,7 @@ function Stop-TrackedProcess([string]$Name) {
 try {
     Write-Host "MemoryPal 설치 파일과 캐시를 정리합니다." -ForegroundColor Cyan
     Stop-TrackedProcess "gateway"
+    Stop-TrackedProcess "admin"
     Stop-TrackedProcess "frontend"
 
     if (-not $RemoveData -and (Test-Path -LiteralPath $DatabasePath)) {
@@ -64,6 +65,8 @@ try {
         (Join-Path $Root "frontend\node_modules"),
         (Join-Path $Root "frontend\dist"),
         (Join-Path $Root "frontend\.expo"),
+        (Join-Path $Root "admin\node_modules"),
+        (Join-Path $Root "admin\dist"),
         (Join-Path $Root ".pytest_cache")
     )) {
         Remove-ProjectPath $Path

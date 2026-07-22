@@ -40,6 +40,20 @@ CREATE TABLE voice_profiles (
 
     description TEXT,
 
+    owner_ref VARCHAR(64),
+
+    registration_token_hash VARCHAR(64)
+    UNIQUE,
+
+    registration_state VARCHAR(16)
+    NOT NULL
+    DEFAULT 'active'
+    CHECK (registration_state IN ('pending', 'active')),
+
+    expires_at TIMESTAMPTZ,
+
+    legacy_source_path TEXT,
+
     created_at TIMESTAMP
     NOT NULL
     DEFAULT CURRENT_TIMESTAMP
@@ -128,4 +142,12 @@ CREATE TABLE memories (
     REFERENCES sessions(id)
     ON DELETE CASCADE
 
+);
+
+CREATE TABLE IF NOT EXISTS voice_owner_states (
+    owner_ref VARCHAR(64) PRIMARY KEY,
+    state VARCHAR(16) NOT NULL DEFAULT 'active'
+        CHECK (state IN ('active', 'purged')),
+    created_at TIMESTAMPTZ NOT NULL,
+    purged_at TIMESTAMPTZ
 );

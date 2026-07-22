@@ -1,0 +1,10 @@
+\set ON_ERROR_STOP on
+
+-- Copy to the next zero-padded version, for example 0003_add_job_index.sql.
+-- Never edit an already-applied migration; add a forward-only migration.
+BEGIN;
+
+-- SQL changes go here. Prefer schema-qualified object names and online-safe
+-- index/constraint rollout plans for large existing tables.
+
+COMMIT;

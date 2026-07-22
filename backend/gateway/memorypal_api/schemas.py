@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 
 class RegisterRequest(BaseModel):
@@ -14,6 +14,20 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=60)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: SecretStr = Field(min_length=8, max_length=128)
+    new_password: SecretStr = Field(min_length=8, max_length=128)
+
+
+class AccountDeleteRequest(BaseModel):
+    current_password: SecretStr = Field(min_length=8, max_length=128)
+    confirmation: Literal["DELETE"]
 
 
 class UserResponse(BaseModel):
@@ -56,6 +70,9 @@ class ChatRequest(BaseModel):
     speak: bool = True
     casual_mode: bool = False
     persona: Literal["default", "emotional_companion"] = "default"
+    internet_enabled: bool = False
+    thinking_mode: bool = False
+    reasoning_effort: Literal["low", "medium", "high"] = "medium"
 
 
 class RegenerateRequest(BaseModel):
@@ -63,6 +80,13 @@ class RegenerateRequest(BaseModel):
     speak: bool = True
     casual_mode: bool = False
     persona: Literal["default", "emotional_companion"] = "default"
+    internet_enabled: bool = False
+    thinking_mode: bool = False
+    reasoning_effort: Literal["low", "medium", "high"] = "medium"
+
+
+class MessageAudioRequest(BaseModel):
+    voice_id: str | None = Field(default=None, max_length=128)
 
 
 class MessageResponse(BaseModel):
@@ -112,3 +136,23 @@ class VoiceResponse(BaseModel):
 class VoiceStatusResponse(BaseModel):
     has_personalized_voice: bool
     personalized_voice_count: int
+
+
+class PortraitGenerateRequest(BaseModel):
+    persona: Literal["default", "emotional_companion"] = "default"
+
+
+class PortraitResponse(BaseModel):
+    status: Literal["empty", "queued", "analyzing", "complete", "failed"]
+    persona: Literal["default", "emotional_companion"] = "default"
+    title: str | None = Field(default=None, min_length=2, max_length=2, pattern=r"^[가-힣]{2}$")
+    summary: str | None = Field(default=None, max_length=500)
+    accuracy_percent: int = Field(default=0, ge=0, le=100)
+    analyzed_sessions: int = Field(default=0, ge=0)
+    analyzed_messages: int = Field(default=0, ge=0)
+    progress_percent: int = Field(default=0, ge=0, le=100)
+    vector_method: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    updated_at: str | None = None
+    error: str | None = None

@@ -16,9 +16,10 @@ import {
 
 import { api } from '../api';
 import { playWebAudio, unlockWebAudio } from '../audioPlayback';
+import { MarkdownMessage } from '../components/MarkdownMessage';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
-import type { Attachment, Message, Persona, Session } from '../types';
+import type { Attachment, Message, Persona, ReasoningEffort, Session } from '../types';
 
 type Props = {
   token: string;
@@ -26,6 +27,9 @@ type Props = {
   casualMode: boolean;
   persona: Persona;
   voiceReplyEnabled: boolean;
+  internetEnabled: boolean;
+  thinkingMode: boolean;
+  reasoningEffort: ReasoningEffort;
   incomingMessage?: Message;
   onIncomingMessageConsumed: () => void;
   onSessionChange: (id: string) => void;
@@ -68,6 +72,9 @@ export function ChatScreen({
   casualMode,
   persona,
   voiceReplyEnabled,
+  internetEnabled,
+  thinkingMode,
+  reasoningEffort,
   incomingMessage,
   onIncomingMessageConsumed,
   onSessionChange,
@@ -90,6 +97,8 @@ export function ChatScreen({
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string>();
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<string>();
+  const [generatingAudioMessageId, setGeneratingAudioMessageId] = useState<string>();
+  const generatingAudioMessageIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView>(null);
 
   const loadSessions = async () => {
@@ -135,7 +144,10 @@ export function ChatScreen({
     setError('');
     setMessages((current) => [...current, optimisticMessage]);
     try {
-      const response = await api.chat(token, value, activeSessionId, undefined, true, casualMode, persona);
+      const response = await api.chat(
+        token, value, activeSessionId, undefined, voiceReplyEnabled, casualMode, persona, internetEnabled, thinkingMode,
+        reasoningEffort,
+      );
       onSessionChange(response.session.id);
       if (voiceReplyEnabled) {
         if (response.message.audio_url) setAutoPlayMessageId(response.message.id);
@@ -170,9 +182,12 @@ export function ChatScreen({
         token,
         message.id,
         undefined,
-        true,
+        voiceReplyEnabled,
         casualMode,
         persona,
+        internetEnabled,
+        thinkingMode,
+        reasoningEffort,
       );
       setMessages((current) => current.map((item) => (
         item.id === message.id ? response.message : item
@@ -186,6 +201,27 @@ export function ChatScreen({
       setError(reason instanceof Error ? reason.message : '답변을 다시 생성하지 못했어요.');
     } finally {
       setRegeneratingMessageId(undefined);
+    }
+  };
+
+  const generateMessageAudio = async (message: Message) => {
+    if (generatingAudioMessageIdRef.current || message.id.startsWith('pending-')) return;
+    generatingAudioMessageIdRef.current = message.id;
+    unlockWebAudio();
+    try {
+      setGeneratingAudioMessageId(message.id);
+      setError('');
+      const updatedMessage = await api.messageAudio(token, message.id);
+      if (!updatedMessage.audio_url) throw new Error('음성을 생성하지 못했어요. 잠시 후 다시 시도해 주세요.');
+      setMessages((current) => current.map((item) => (
+        item.id === message.id ? updatedMessage : item
+      )));
+      setAutoPlayMessageId(updatedMessage.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '음성을 생성하지 못했어요.');
+    } finally {
+      generatingAudioMessageIdRef.current = undefined;
+      setGeneratingAudioMessageId(undefined);
     }
   };
 
@@ -332,10 +368,21 @@ export function ChatScreen({
             <View style={[styles.bubble, styles.userBubble]}><Text style={styles.userText}>{message.user_text}</Text></View>
             {!!(message.assistant_text.trim() || message.audio_url) && (
               <View style={[styles.bubble, styles.assistantBubble]}>
-                {!!message.assistant_text.trim() && <Text style={styles.assistantText}>{message.assistant_text}</Text>}
-                {!!message.audio_url && (
-                  <AudioButton uri={message.audio_url} onError={setError} autoPlay={autoPlayMessageId === message.id} />
-                )}
+                {!!message.assistant_text.trim() && <MarkdownMessage>{message.assistant_text}</MarkdownMessage>}
+                {!!message.audio_url
+                  ? <AudioButton uri={message.audio_url} onError={setError} autoPlay={autoPlayMessageId === message.id} />
+                  : !!message.assistant_text.trim() && !message.id.startsWith('pending-') && (
+                    <Pressable
+                      accessibilityLabel="답변 음성으로 듣기"
+                      disabled={!!generatingAudioMessageId}
+                      onPress={() => void generateMessageAudio(message)}
+                      style={[styles.audioButton, !!generatingAudioMessageId && styles.sendDisabled]}
+                    >
+                      {generatingAudioMessageId === message.id
+                        ? <View style={styles.audioLoading}><ActivityIndicator color={colors.primaryDark} size="small" /><Text style={styles.audioText}>음성 생성 중…</Text></View>
+                        : <Text style={styles.audioText}>▶ 음성으로 듣기</Text>}
+                    </Pressable>
+                  )}
                 {!!message.assistant_text.trim() && !message.id.startsWith('pending-') && (
                   <Pressable
                     accessibilityLabel="답변 다시 생성"
@@ -482,8 +529,8 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   userBubble: { alignSelf: 'flex-end', backgroundColor: colors.primary, borderBottomRightRadius: 6 },
   assistantBubble: { alignSelf: 'flex-start', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderBottomLeftRadius: 6 },
   userText: { color: '#FFFFFF', fontSize: 15, lineHeight: 22 },
-  assistantText: { color: colors.ink, fontSize: 15, lineHeight: 23 },
   audioButton: { alignSelf: 'flex-start', marginTop: 11, backgroundColor: colors.primarySoft, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 999 },
+  audioLoading: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   audioText: { color: colors.primaryDark, fontSize: 11, fontWeight: '800' },
   regenerateButton: { alignSelf: 'flex-start', minHeight: 30, marginTop: 8, paddingHorizontal: 10, borderRadius: 999, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.subtle },
   regenerateText: { color: colors.muted, fontSize: 11, fontWeight: '800' },
