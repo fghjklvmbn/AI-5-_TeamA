@@ -101,3 +101,32 @@ def test_synthesize_retries_once_after_temporary_failure(monkeypatch):
     client = Client()
     monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: client)
     assert asyncio.run(pipeline.synthesize("답변", None))
+
+
+def test_delete_voice_uses_archive_service_token(monkeypatch):
+    pipeline = ModelPipeline(replace(load_settings(), archive_service_token="shared-secret"))
+    captured = {}
+
+    class Response:
+        status_code = 204
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def delete(self, url, headers):
+            captured["url"] = url
+            captured["headers"] = headers
+            return Response()
+
+    monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: Client())
+    asyncio.run(pipeline.delete_voice("voice-1"))
+
+    assert captured["url"].endswith("/voice/voice-1")
+    assert captured["headers"]["X-MemoryPal-Archive-Token"] == "shared-secret"

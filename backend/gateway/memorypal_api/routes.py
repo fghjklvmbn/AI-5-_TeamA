@@ -449,6 +449,28 @@ async def create_voice(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.delete("/voices/{voice_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_voice(
+    voice_id: str,
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+):
+    settings = request.app.state.settings
+    db = request.app.state.db
+    if voice_id == settings.default_voice_id:
+        raise HTTPException(status_code=409, detail="공용 기본 음성은 삭제할 수 없습니다.")
+    if not db.user_has_voice(user.id, voice_id):
+        raise HTTPException(status_code=404, detail="개인화 음성을 찾을 수 없습니다.")
+
+    try:
+        await request.app.state.pipeline.delete_voice(voice_id)
+    except PipelineUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not db.delete_user_voice(user.id, voice_id):
+        raise HTTPException(status_code=409, detail="음성 소유권 정보를 갱신하지 못했습니다.")
+
+
 @router.get("/memories", response_model=list[MemoryResponse])
 def list_memories(request: Request, user: CurrentUser = Depends(get_current_user)):
     return [memory_response(row) for row in request.app.state.db.list_memories(user.id)]

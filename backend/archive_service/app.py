@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import SQLAlchemyError
@@ -59,19 +59,29 @@ ARCHIVE_PUBLIC_URL = os.getenv(
     "http://127.0.0.1:8004",
 ).rstrip("/")
 
+ARCHIVE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = Path(
-    "voice_uploads"
+    ARCHIVE_DIR,
+    "private_voice_uploads"
 )
 
 UPLOAD_DIR.mkdir(
+    parents=True,
     exist_ok=True
 )
 
 app.mount(
     "/voice_uploads",
-    StaticFiles(directory="voice_uploads"),
+    StaticFiles(directory=str(UPLOAD_DIR)),
     name="voice_uploads"
 )
+
+
+def resolved_audio_path(audio_path: str) -> str:
+    path = Path(audio_path)
+    if not path.is_absolute():
+        path = ARCHIVE_DIR / path
+    return str(path.resolve())
 
 
 @app.get("/health")
@@ -300,7 +310,7 @@ def get_voice_list():
                 item.voice_name,
 
                 "audio_path":
-                item.audio_path,
+                resolved_audio_path(item.audio_path),
 
                 "reference_text":
                 item.reference_text,
@@ -345,7 +355,7 @@ def get_voice(
             voice.voice_name,
 
             "audio_path":
-            voice.audio_path,
+            resolved_audio_path(voice.audio_path),
 
             "reference_text":
             voice.reference_text,
@@ -353,6 +363,77 @@ def get_voice(
             "description":
             voice.description
         }
+    finally:
+        db.close()
+
+
+@app.delete("/voice/{voice_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_voice(
+    voice_id: str,
+    request: Request
+):
+    configured_token = os.getenv(
+        "MEMORYPAL_ARCHIVE_SERVICE_TOKEN",
+        ""
+    ).strip()
+    provided_token = request.headers.get(
+        "X-MemoryPal-Archive-Token",
+        ""
+    )
+    client_host = request.client.host if request.client else ""
+
+    if configured_token:
+        import secrets
+
+        if not secrets.compare_digest(
+            configured_token,
+            provided_token
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Archive 내부 삭제 권한이 없습니다."
+            )
+    elif client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
+        raise HTTPException(
+            status_code=403,
+            detail="서비스 토큰이 없는 삭제 요청은 로컬 연결만 허용됩니다."
+        )
+
+    default_voice_id = os.getenv(
+        "MEMORYPAL_DEFAULT_VOICE_ID",
+        "00000000-0000-0000-0000-000000000001"
+    )
+    if voice_id == default_voice_id:
+        raise HTTPException(
+            status_code=409,
+            detail="공용 기본 음성은 삭제할 수 없습니다."
+        )
+
+    db = SessionLocal()
+
+    try:
+        try:
+            deleted = VoiceService.delete(
+                db,
+                voice_id,
+                UPLOAD_DIR,
+                ARCHIVE_DIR
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=str(exc)
+            ) from exc
+
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail="음성을 찾을 수 없습니다."
+            )
+
+        return Response(
+            status_code=status.HTTP_204_NO_CONTENT
+        )
     finally:
         db.close()
     
@@ -389,7 +470,7 @@ def upload_audio(
 
     return {
         "audio_path":
-        str(save_path.resolve()),
+        save_path.relative_to(ARCHIVE_DIR).as_posix(),
 
         "audio_url":
         f"{ARCHIVE_PUBLIC_URL}/voice_uploads/{filename}"

@@ -351,6 +351,12 @@ class Database:
             "SELECT 1 FROM user_voice_profiles WHERE user_id = ? AND voice_id = ?", (user_id, voice_id)
         ) is not None
 
+    def delete_user_voice(self, user_id: str, voice_id: str) -> bool:
+        return bool(self.execute(
+            "DELETE FROM user_voice_profiles WHERE user_id = ? AND voice_id = ?",
+            (user_id, voice_id),
+        ))
+
     # 메모리 생성 및 반영(사실상 메모리 엔진의 한부분)
     def upsert_memory(
         self,

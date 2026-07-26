@@ -40,6 +40,7 @@ class Settings:
     tts_url: str
     tts_public_url: str
     archive_url: str
+    archive_service_token: str
     default_voice_id: str
     request_timeout_seconds: float
 
@@ -62,6 +63,7 @@ def load_settings() -> Settings:
         tts_url=os.getenv("MEMORYPAL_TTS_URL", "http://127.0.0.1:8003").rstrip("/"),
         tts_public_url=os.getenv("MEMORYPAL_TTS_PUBLIC_URL", "").rstrip("/"),
         archive_url=os.getenv("MEMORYPAL_ARCHIVE_URL", "http://127.0.0.1:8004").rstrip("/"),
+        archive_service_token=os.getenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN", "").strip(),
         default_voice_id=os.getenv(
             "MEMORYPAL_DEFAULT_VOICE_ID",
             "00000000-0000-0000-0000-000000000001",

@@ -332,6 +332,24 @@ class ModelPipeline:
         except (httpx.HTTPError, TypeError, ValueError):
             return []
 
+    async def delete_voice(self, voice_id: str) -> None:
+        headers = {}
+        if self.settings.archive_service_token:
+            headers["X-MemoryPal-Archive-Token"] = self.settings.archive_service_token
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+                response = await client.delete(
+                    f"{self.settings.archive_url}/voice/{voice_id}",
+                    headers=headers,
+                )
+                if response.status_code == 404:
+                    return
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise PipelineUnavailable(
+                "개인화 음성을 삭제하지 못했습니다. Archive 서버와 파일 상태를 확인해 주세요."
+            ) from exc
+
     async def register_voice(
         self, content: bytes, filename: str, content_type: str, voice_name: str,
         reference_text: str, description: str | None,

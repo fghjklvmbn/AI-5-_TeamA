@@ -63,3 +63,14 @@ class VoiceRepository:
 
             .first()
         )
+
+    @staticmethod
+    def delete(
+        db,
+        voice
+    ):
+        db.delete(
+            voice
+        )
+
+        db.commit()

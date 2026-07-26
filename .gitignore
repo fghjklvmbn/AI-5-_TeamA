@@ -15,6 +15,7 @@ backend/gateway/data/
 backend/STT_backend_server/uploads/
 backend/TTS_Server/outputs/
 backend/archive_service/voice_uploads/
+backend/archive_service/private_voice_uploads/8957a86a-962c-5f13-94a4-55887874b80d.webm
 backend.zip
 
 # Expo / Node

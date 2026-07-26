@@ -28,6 +28,18 @@ def test_personalized_voice_ownership_is_scoped_per_user(tmp_path):
     assert not db.user_has_voice(other["id"], "voice")
 
 
+def test_delete_personalized_voice_removes_only_the_owners_mapping(tmp_path):
+    db = Database(tmp_path / "memorypal.db"); db.initialize()
+    owner = create_user(db, "owner@example.com"); other = create_user(db, "other@example.com")
+    db.add_user_voice(owner["id"], "owner-voice")
+    db.add_user_voice(other["id"], "other-voice")
+
+    assert db.delete_user_voice(owner["id"], "owner-voice")
+    assert not db.user_has_voice(owner["id"], "owner-voice")
+    assert db.user_has_voice(other["id"], "other-voice")
+    assert not db.delete_user_voice(owner["id"], "other-voice")
+
+
 def test_attachments_are_scoped_and_removed_with_session(tmp_path):
     db = Database(tmp_path / "memorypal.db"); db.initialize()
     owner = create_user(db, "owner@example.com"); other = create_user(db, "other@example.com")

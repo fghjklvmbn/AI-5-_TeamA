@@ -184,6 +184,9 @@ export const api = {
   voiceStatus(token: string) {
     return request<VoiceStatus>('/voices/status', {}, token);
   },
+  deleteVoice(token: string, voiceId: string) {
+    return request<void>(`/voices/${voiceId}`, { method: 'DELETE' }, token);
+  },
   async createVoice(
     token: string,
     uri: string,

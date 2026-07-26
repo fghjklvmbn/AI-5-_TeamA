@@ -71,6 +71,8 @@ export function SettingsScreen({
   const [sampleUri, setSampleUri] = useState<string>();
   const [recording, setRecording] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deleteTargetId, setDeleteTargetId] = useState<string>();
+  const [deletingVoiceId, setDeletingVoiceId] = useState<string>();
   const [voiceMessage, setVoiceMessage] = useState('');
 
   const loadVoices = useCallback(() => {
@@ -140,6 +142,26 @@ export function SettingsScreen({
       setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 등록하지 못했습니다.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const deleteVoice = async (voice: Voice) => {
+    if (voice.is_default || !voice.is_personalized || deletingVoiceId) return;
+    setDeletingVoiceId(voice.id);
+    setVoiceMessage(`'${voice.voice_name}' 음성과 원본 파일을 삭제하고 있어요...`);
+    try {
+      await api.deleteVoice(token, voice.id);
+      setVoices((current) => current.filter((item) => item.id !== voice.id));
+      setVoiceStatus((current) => {
+        const count = Math.max(0, (current?.personalized_voice_count ?? 1) - 1);
+        return { has_personalized_voice: count > 0, personalized_voice_count: count };
+      });
+      setDeleteTargetId(undefined);
+      setVoiceMessage(`'${voice.voice_name}' 음성과 원본 파일을 삭제했어요.`);
+    } catch (reason) {
+      setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 삭제하지 못했습니다.');
+    } finally {
+      setDeletingVoiceId(undefined);
     }
   };
 
@@ -341,6 +363,37 @@ export function SettingsScreen({
                 {voice.is_default ? '모든 계정에 제공되는 기본 응답 음성' : voice.description || '이 계정에 등록된 개인화 음성'}
               </Text>
             </View>
+            {voice.is_personalized && !voice.is_default && (
+              deleteTargetId === voice.id ? (
+                <View style={styles.voiceDeleteActions}>
+                  <Pressable
+                    disabled={deletingVoiceId === voice.id}
+                    onPress={() => setDeleteTargetId(undefined)}
+                    style={styles.voiceDeleteCancel}
+                  >
+                    <Text style={styles.voiceDeleteCancelText}>취소</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={deletingVoiceId === voice.id}
+                    onPress={() => void deleteVoice(voice)}
+                    style={[styles.voiceDeleteConfirm, deletingVoiceId === voice.id && styles.disabledButton]}
+                  >
+                    {deletingVoiceId === voice.id
+                      ? <ActivityIndicator color="#FFFFFF" size="small" />
+                      : <Text style={styles.voiceDeleteConfirmText}>삭제</Text>}
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  accessibilityLabel={`${voice.voice_name} 개인화 음성 삭제`}
+                  disabled={!!deletingVoiceId}
+                  onPress={() => setDeleteTargetId(voice.id)}
+                  style={styles.voiceDeleteButton}
+                >
+                  <Text style={styles.voiceDeleteButtonText}>삭제</Text>
+                </Pressable>
+              )
+            )}
           </View>
         )) : <Text style={styles.emptyVoice}>등록된 개인화 음성이 없습니다. 위의 음성 추가 버튼으로 만들어 보세요.</Text>}
       </View>
@@ -417,6 +470,13 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   voiceIconText: { color: colors.primaryDark, fontSize: 16, fontWeight: '800' },
   voiceName: { color: colors.ink, fontSize: 13, fontWeight: '800' },
   voiceDesc: { color: colors.muted, fontSize: 10, marginTop: 3 },
+  voiceDeleteButton: { minHeight: 32, borderRadius: 10, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.dangerSoft, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
+  voiceDeleteButtonText: { color: colors.danger, fontSize: 10, fontWeight: '900' },
+  voiceDeleteActions: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  voiceDeleteCancel: { minHeight: 32, borderRadius: 10, backgroundColor: colors.subtle, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
+  voiceDeleteCancelText: { color: colors.muted, fontSize: 10, fontWeight: '800' },
+  voiceDeleteConfirm: { minWidth: 47, minHeight: 32, borderRadius: 10, backgroundColor: colors.danger, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
+  voiceDeleteConfirmText: { color: '#FFFFFF', fontSize: 10, fontWeight: '900' },
   emptyVoice: { color: colors.muted, fontSize: 12, textAlign: 'center', paddingVertical: 12 },
   logout: { height: 51, borderRadius: 16, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.dangerSoft, alignItems: 'center', justifyContent: 'center' },
   logoutText: { color: colors.danger, fontSize: 14, fontWeight: '800' },
