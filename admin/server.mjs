@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./dist', import.meta.url)));
 const port = Number(process.env.MEMORYPAL_ADMIN_PORT || process.env.PORT || 8082);
-const prefix = '/api_memoripal/manage';
+const prefix = '/api_memoripal/project3/manage';
 const mime = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',

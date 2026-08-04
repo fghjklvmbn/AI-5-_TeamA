@@ -6,6 +6,10 @@ from pathlib import Path
 
 import uvicorn
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GATEWAY_ROOT = PROJECT_ROOT / "backend" / "gateway"
+sys.path.insert(0, str(GATEWAY_ROOT))
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()

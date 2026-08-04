@@ -4,6 +4,10 @@ import argparse
 import sys
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GATEWAY_ROOT = PROJECT_ROOT / "backend" / "gateway"
+sys.path.insert(0, str(GATEWAY_ROOT))
+
 from memorypal_api.worker import main as run_worker
 
 

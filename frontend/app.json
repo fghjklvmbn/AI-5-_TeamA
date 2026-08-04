@@ -42,7 +42,7 @@
       "bundler": "metro"
     },
     "experiments": {
-      "baseUrl": "/api_memoripal/main"
+      "baseUrl": "/api_memoripal/project3/main"
     }
   }
 }

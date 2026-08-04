@@ -11,8 +11,8 @@ import type {
 const explicitApiUrl = import.meta.env.VITE_API_URL as string | undefined;
 const isLocal = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
 export const API_URL = (explicitApiUrl || (isLocal
-  ? 'http://127.0.0.1:8000/v1'
-  : '/api_memoripal/gateway/v1')).replace(/\/$/, '');
+  ? 'http://127.0.0.1:8010/v1'
+  : '/api_memoripal/project3/gateway/v1')).replace(/\/$/, '');
 
 const TOKEN_KEY = 'memorypal.admin.session';
 
