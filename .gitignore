@@ -28,6 +28,7 @@ frontend/.static-web.*.log
 frontend/.static-proxy.*.log
 npm-debug.log*
 .runtime/
+.worktrees/
 
 # Editors and operating systems
 .DS_Store
