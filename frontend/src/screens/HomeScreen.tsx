@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '../api';
@@ -13,11 +13,13 @@ type Props = {
   user: User;
   casualMode: boolean;
   persona: Persona;
+  voiceId?: string;
   voiceReplyEnabled: boolean;
   internetEnabled: boolean;
   thinkingMode: boolean;
   reasoningEffort: ReasoningEffort;
   onPersonaChange: (persona: Persona) => void;
+  onVoiceIdChange: (voiceId: string | undefined) => void;
   onConversation: (response: ChatResponse) => void;
   onVoiceProcessingChange: (active: boolean, transcript?: string) => void;
   onOpenAccount: () => void;
@@ -69,15 +71,15 @@ function DropdownField({
   );
 }
 
-export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled, internetEnabled, thinkingMode, reasoningEffort, onPersonaChange, onConversation, onVoiceProcessingChange, onOpenAccount, onLogout }: Props) {
+export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceReplyEnabled, internetEnabled, thinkingMode, reasoningEffort, onPersonaChange, onVoiceIdChange, onConversation, onVoiceProcessingChange, onOpenAccount, onLogout }: Props) {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const recorder = useLiveRecorder(token);
   const [voices, setVoices] = useState<Voice[]>([]);
-  const [voiceId, setVoiceId] = useState<string>();
   const [processing, setProcessing] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [status, setStatus] = useState('가운데 버튼을 누르고 편하게 말해 보세요.');
+  const mountedRef = useRef(true);
 
   const voiceOptions: DropdownOption[] = (voices.length
     ? voices
@@ -90,13 +92,26 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
   const personaOptions: DropdownOption[] = [
     { id: 'default', label: '기본', detail: '일반 AI 도우미' },
     { id: 'emotional_companion', label: '정서적 동반자', detail: '공감 중심 대화' },
+    { id: 'none', label: '없음', detail: '역할 설정 없는 일반 채팅' },
   ];
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
     void api.voices(token).then((items) => {
+      if (!active) return;
       setVoices(items);
-      setVoiceId((items.find((voice) => voice.is_default) ?? items[0])?.id);
-    }).catch(() => setVoices([]));
+      if (!voiceId || !items.some((voice) => voice.id === voiceId)) {
+        onVoiceIdChange((items.find((voice) => voice.is_default) ?? items[0])?.id);
+      }
+    }).catch(() => {
+      if (active) setVoices([]);
+    });
+    return () => { active = false; };
   }, [token]);
 
   useEffect(() => {
@@ -120,6 +135,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
       onVoiceProcessingChange(true);
       setStatus('기억을 살펴보고 답변을 만들고 있어요…');
       const transcript = await recorder.stop();
+      if (!mountedRef.current) return;
       if (!transcript) {
         setStatus('잘 들리지 않았어요. 조금 더 가까이에서 다시 말해 주세요.');
         return;
@@ -130,12 +146,15 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
         token, transcript, undefined, voiceId, voiceReplyEnabled, casualMode, persona, internetEnabled, thinkingMode,
         reasoningEffort,
       );
+      if (!mountedRef.current) return;
       setStatus('답변이 준비됐어요.');
       onConversation(response);
     } catch (reason) {
-      setStatus(reason instanceof Error ? reason.message : '음성 대화를 시작하지 못했어요.');
+      if (mountedRef.current) {
+        setStatus(reason instanceof Error ? reason.message : '음성 대화를 시작하지 못했어요.');
+      }
     } finally {
-      setProcessing(false);
+      if (mountedRef.current) setProcessing(false);
       onVoiceProcessingChange(false);
     }
   };
@@ -185,7 +204,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceReplyEnabled
         <View style={styles.selectorRow}>
           <DropdownField
             label="응답 음성"
-            onSelect={(id) => setVoiceId(id === 'default' ? undefined : id)}
+            onSelect={(id) => onVoiceIdChange(id === 'default' ? undefined : id)}
             options={voiceOptions}
             value={voiceId ?? 'default'}
           />
@@ -274,14 +293,14 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   transcript: { color: colors.ink, fontSize: 15, lineHeight: 23 },
   selectorSection: { marginTop: 24, zIndex: 20 },
   selectorRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  dropdownField: { flex: 1, position: 'relative' },
+  dropdownField: { flex: 1 },
   dropdownFieldOpen: { zIndex: 30 },
   sectionLabel: { color: colors.ink, fontWeight: '800', fontSize: 14, marginBottom: 10 },
   dropdownButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 15, backgroundColor: colors.surface, paddingHorizontal: 13 },
   dropdownButtonOpen: { borderColor: colors.primary },
   dropdownValue: { flex: 1, color: colors.ink, fontSize: 12, fontWeight: '800' },
   dropdownChevron: { color: colors.primaryDark, fontSize: 16, fontWeight: '900' },
-  dropdownMenu: { position: 'absolute', left: 0, right: 0, bottom: 54, zIndex: 40, elevation: 12, borderRadius: 15, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 5, shadowColor: '#2E2438', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.16, shadowRadius: 14 },
+  dropdownMenu: { marginTop: 6, zIndex: 40, elevation: 12, borderRadius: 15, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 5, shadowColor: '#2E2438', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.16, shadowRadius: 14 },
   dropdownScroll: { maxHeight: 220 },
   dropdownOption: { minHeight: 48, justifyContent: 'center', borderRadius: 11, paddingHorizontal: 10, paddingVertical: 7 },
   dropdownOptionActive: { backgroundColor: colors.primarySoft },

@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
@@ -67,6 +68,47 @@ def test_on_demand_audio_rejects_unfinished_answer(tmp_path):
             json={}, headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 409
+
+
+def test_chat_stream_emits_deltas_then_persists_completed_message(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+
+    async def generate(*_args, **kwargs) -> str:
+        await kwargs["on_delta"]("안녕")
+        await kwargs["on_delta"]("하세요")
+        return "안녕하세요"
+
+    async def extract_memories(*_args, **_kwargs) -> list:
+        return []
+
+    app.state.pipeline.generate = generate
+    app.state.pipeline.extract_memories = extract_memories
+    with TestClient(app) as client:
+        _user_id, token = register(client, "stream-chat@example.com")
+        response = client.post(
+            "/v1/chat/messages/stream",
+            json={"text": "인사해 줘", "speak": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/x-ndjson")
+        events = [json.loads(line) for line in response.text.splitlines()]
+        assert events[:2] == [
+            {"type": "delta", "delta": "안녕"},
+            {"type": "delta", "delta": "하세요"},
+        ]
+        assert events[-1]["type"] == "complete"
+        completed = events[-1]["response"]
+        assert completed["message"]["assistant_text"] == "안녕하세요"
+        history = client.get(
+            f'/v1/sessions/{completed["session"]["id"]}/messages',
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert history.json()[-1]["assistant_text"] == "안녕하세요"
 
 
 def test_chat_voice_switch_controls_output_length_policy(tmp_path):

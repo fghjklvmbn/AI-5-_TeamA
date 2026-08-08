@@ -1,0 +1,17 @@
+services:
+  stt:
+    build:
+      args:
+        TORCH_INDEX_URL: ${MEMORYPAL_NVIDIA_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+    gpus: all
+    environment:
+      MEMORYPAL_STT_DEVICE: cuda
+
+  tts:
+    build:
+      args:
+        TORCH_INDEX_URL: ${MEMORYPAL_NVIDIA_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+    gpus: all
+    environment:
+      MEMORYPAL_TTS_DEVICE: cuda
+      MEMORYPAL_TTS_ENGINE: ${MEMORYPAL_TTS_ENGINE:-faster}

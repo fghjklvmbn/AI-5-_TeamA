@@ -10,6 +10,7 @@ from memorypal_api.services.pipeline import ModelPipeline, PipelineUnavailable
 
 
 ARCHIVE_SERVICE_TOKEN = "archive-pipeline-test-token-" + "x" * 48
+MODEL_SERVICE_TOKEN = "model-pipeline-test-token-" + "m" * 48
 
 
 def test_public_audio_url_replaces_internal_tts_origin():
@@ -53,6 +54,45 @@ def test_completion_disables_reasoning_without_mutating_stored_messages(monkeypa
     assert original[-1]["content"] == "오늘 지쳤어"
 
 
+def test_completion_streams_visible_content_deltas(monkeypatch):
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}'
+            yield 'data: {"choices":[{"delta":{"content":"안녕"}}]}'
+            yield 'data: {"choices":[{"delta":{"content":"하세요"}}]}'
+            yield 'data: [DONE]'
+
+    class StreamContext:
+        async def __aenter__(self): return Response()
+        async def __aexit__(self, *_args): return None
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return None
+        def stream(self, method, _url, headers, json):
+            captured.update({"method": method, "payload": json})
+            return StreamContext()
+
+    deltas = []
+
+    async def run():
+        async def on_delta(delta):
+            deltas.append(delta)
+        return await pipeline._completion(
+            [{"role": "user", "content": "인사해 줘"}], 0.7, on_delta=on_delta,
+        )
+
+    monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: Client())
+    assert asyncio.run(run()) == "안녕하세요"
+    assert deltas == ["안녕", "하세요"]
+    assert captured["method"] == "POST"
+    assert captured["payload"]["stream"] is True
+
+
 @pytest.mark.parametrize("reasoning_effort", ["low", "medium", "high"])
 def test_completion_thinking_mode_reserves_reasoning_budget(monkeypatch, reasoning_effort):
     pipeline = ModelPipeline(load_settings())
@@ -91,11 +131,52 @@ def test_request_schemas_default_thinking_mode_off():
     assert RegenerateRequest().thinking_mode is False
     assert ChatRequest(text="질문").reasoning_effort == "medium"
     assert RegenerateRequest().reasoning_effort == "medium"
+    assert ChatRequest(text="질문", persona="none").persona == "none"
+    assert RegenerateRequest(persona="none").persona == "none"
 
 
 def test_request_schemas_reject_unknown_reasoning_effort():
     with pytest.raises(ValueError):
         ChatRequest(text="질문", reasoning_effort="extreme")
+
+
+def test_agent_planner_accepts_only_an_allowed_read_only_action():
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured.update({"messages": messages, "temperature": temperature, "model": model})
+        return '{"action":"document_search","query":"배포 일정"}'
+
+    pipeline._completion = completion
+    action, query = asyncio.run(pipeline.plan_agent_step(
+        user_text="배포 일정이 언제야?",
+        evidence="현재 근거",
+        history=[],
+        allowed_tools=["memory_search", "document_search"],
+        attempted=[],
+        persona="none",
+    ))
+
+    assert (action, query) == ("document_search", "배포 일정")
+    assert captured["temperature"] == 0.0
+    assert "읽기 전용" in captured["messages"][0]["content"]
+
+
+def test_agent_planner_rejects_unavailable_or_mutating_action():
+    pipeline = ModelPipeline(load_settings())
+
+    async def completion(*_args, **_kwargs):
+        return '{"action":"delete_memory","query":"all"}'
+
+    pipeline._completion = completion
+    assert asyncio.run(pipeline.plan_agent_step(
+        user_text="기억을 확인해 줘",
+        evidence="근거",
+        history=[],
+        allowed_tools=["memory_search"],
+        attempted=[],
+    )) == ("answer", "")
 
 
 def test_generate_forwards_selected_reasoning_effort():
@@ -199,7 +280,42 @@ def test_generate_routes_each_persona_to_its_own_model():
     pipeline._completion = completion
     asyncio.run(pipeline.generate("질문", "", [], persona="default"))
     asyncio.run(pipeline.generate("질문", "", [], persona="emotional_companion"))
-    assert models == ["qwen/qwen3.5-9b", "memorypal_ai"]
+    asyncio.run(pipeline.generate("질문", "", [], persona="none"))
+    assert models == ["qwen/qwen3.5-9b", "memorypal_ai", "qwen/qwen3.5-9b"]
+
+
+@pytest.mark.parametrize(
+    ("casual_mode", "expected_style"),
+    [(False, "존댓말(해요체)"), (True, "반말(해체)")],
+)
+def test_none_persona_is_neutral_but_keeps_memory_web_and_document_context(
+    casual_mode, expected_style,
+):
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured["system"] = messages[0]["content"]
+        captured["model"] = model
+        return "확인된 범위에서 답변"
+
+    pipeline._completion = completion
+    asyncio.run(pipeline.generate(
+        "질문", "사용자는 커피를 좋아함", [],
+        casual_mode=casual_mode,
+        persona="none",
+        document_context="[첨부파일: note.md] 문서 근거",
+        web_context="[1] 검색 근거\nURL: https://example.com",
+    ))
+
+    system = captured["system"]
+    assert "특정 이름·성격·동반자 역할이 설정되지 않은" in system
+    assert "MemoryPal이라는" not in system
+    assert "관련 장기 기억" in system
+    assert "note.md" in system
+    assert "이번 답변용 웹 검색 결과" in system
+    assert expected_style in system
+    assert captured["model"] == "qwen/qwen3.5-9b"
 
 
 def test_companion_uses_its_model_for_memory_judgment():
@@ -217,6 +333,24 @@ def test_companion_uses_its_model_for_memory_judgment():
         "라떼 레시피", persona="emotional_companion",
     ))
     assert models == ["memorypal_ai", "memorypal_ai", "memorypal_ai"]
+
+
+def test_none_persona_keeps_memory_extraction_on_the_default_model():
+    pipeline = ModelPipeline(load_settings())
+    models = []
+
+    async def completion(_messages, temperature, model=None, **_kwargs):
+        models.append(model)
+        return "[]"
+
+    pipeline._completion = completion
+    asyncio.run(pipeline.extract_memories("커피를 좋아해", persona="none"))
+    asyncio.run(pipeline.extract_session_memories(
+        "사용자: 커피를 좋아해", "기억해줘", persona="none",
+    ))
+    asyncio.run(pipeline.summarize_user_note("커피 취향", persona="none"))
+
+    assert models == ["qwen/qwen3.5-9b"] * 3
 
 
 def test_default_persona_limits_answer_to_200_characters():
@@ -244,6 +378,8 @@ def test_companion_persona_also_limits_answer_to_200_characters():
         ("default", True),
         ("emotional_companion", False),
         ("emotional_companion", True),
+        ("none", False),
+        ("none", True),
     ],
 )
 def test_text_only_mode_removes_200_character_rule_and_keeps_full_answer(
@@ -392,9 +528,13 @@ def test_explicit_session_memory_extraction_uses_prior_context():
 def test_synthesize_retries_once_after_temporary_failure(monkeypatch):
     pipeline = ModelPipeline(replace(
         load_settings(), archive_service_token=ARCHIVE_SERVICE_TOKEN,
+        model_service_token=MODEL_SERVICE_TOKEN,
     ))
     class Response:
-        def __init__(self, payload): self.payload = payload
+        def __init__(self, payload=None, *, content=b"", headers=None):
+            self.payload = payload
+            self.content = content
+            self.headers = headers or {}
         def raise_for_status(self): return None
         def json(self): return self.payload
     class Client:
@@ -403,14 +543,65 @@ def test_synthesize_retries_once_after_temporary_failure(monkeypatch):
         async def __aexit__(self, *_args): return None
         async def get(self, _url, headers):
             assert headers["Authorization"] == f"Bearer {ARCHIVE_SERVICE_TOKEN}"
+            if _url.endswith("/audio"):
+                return Response(
+                    content=b"RIFF-reference",
+                    headers={
+                        "content-type": "audio/wav",
+                        "content-disposition": 'attachment; filename="ref.wav"',
+                    },
+                )
             return Response({"audio_path": "ref.wav", "reference_text": "안녕"})
-        async def post(self, _url, json):
+        async def post(self, _url, headers, data, files):
+            assert headers == {"Authorization": f"Bearer {MODEL_SERVICE_TOKEN}"}
+            assert _url.endswith("/synthesize-upload")
+            assert data["ref_text"] == "안녕"
+            assert files["ref_audio"][0] == "ref.wav"
+            assert files["ref_audio"][1] == b"RIFF-reference"
             self.count += 1
             if self.count == 1: raise httpx.ConnectError("temporary")
             return Response({"audio_path": "http://127.0.0.1:8003/outputs/retry.wav"})
     client = Client()
     monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: client)
     assert asyncio.run(pipeline.synthesize("답변", None))
+
+
+def test_transcribe_uses_model_service_bearer(monkeypatch):
+    pipeline = ModelPipeline(replace(
+        load_settings(), model_service_token=MODEL_SERVICE_TOKEN,
+    ))
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self): return {"text": "인식 결과"}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return None
+        async def post(self, url, headers, files):
+            captured.update({"url": url, "headers": headers, "files": files})
+            return Response()
+
+    monkeypatch.setattr(
+        "memorypal_api.services.pipeline.httpx.AsyncClient",
+        lambda **_kwargs: Client(),
+    )
+    result = asyncio.run(pipeline.transcribe(b"audio", "sample.wav", "audio/wav"))
+
+    assert result == "인식 결과"
+    assert captured["headers"] == {
+        "Authorization": f"Bearer {MODEL_SERVICE_TOKEN}",
+    }
+    assert captured["files"]["audio"] == ("sample.wav", b"audio", "audio/wav")
+
+
+def test_model_calls_fail_closed_without_service_token():
+    pipeline = ModelPipeline(replace(load_settings(), model_service_token="short"))
+    with pytest.raises(PipelineUnavailable):
+        asyncio.run(pipeline.transcribe(b"audio", "sample.wav", "audio/wav"))
+    with pytest.raises(PipelineUnavailable):
+        pipeline._model_service_headers()
 
 
 def test_archive_registration_uses_internal_auth_owner_and_token(monkeypatch):

@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 8082 --strictPort --base=/api_memoripal/project3/manage/",
-    "build": "tsc --noEmit -p tsconfig.app.json && vite build --base=/api_memoripal/project3/manage/",
-    "preview": "vite preview --host 0.0.0.0 --port 8082 --strictPort --base=/api_memoripal/project3/manage/",
+    "dev": "vite --host 0.0.0.0 --port 8082 --strictPort",
+    "build": "node scripts/build-profile.mjs main",
+    "build:project3": "node scripts/build-profile.mjs project3",
+    "preview": "vite preview --host 0.0.0.0 --port 8082 --strictPort",
     "serve": "node server.mjs"
   },
   "dependencies": {

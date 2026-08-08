@@ -1,3 +1,6 @@
+CREATE SCHEMA IF NOT EXISTS memorypal_archive;
+SET search_path TO memorypal_archive, public;
+
 ALTER TABLE voice_profiles
     ADD COLUMN IF NOT EXISTS owner_ref VARCHAR(64),
     ADD COLUMN IF NOT EXISTS registration_token_hash VARCHAR(64),
@@ -24,7 +27,8 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1
         FROM pg_constraint
-        WHERE conname = 'ck_voice_profiles_registration_state'
+        WHERE conrelid = 'memorypal_archive.voice_profiles'::regclass
+          AND conname = 'ck_voice_profiles_registration_state'
     ) THEN
         ALTER TABLE voice_profiles
             ADD CONSTRAINT ck_voice_profiles_registration_state

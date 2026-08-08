@@ -59,6 +59,7 @@ ARCHIVE_PUBLIC_URL = os.getenv(
     "http://127.0.0.1:8004",
 ).rstrip("/")
 SERVICE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = SERVICE_ROOT.parents[1]
 LEGACY_UPLOAD_DIR = Path("voice_uploads")
 DEFAULT_VOICE_ID = os.getenv(
     "MEMORYPAL_DEFAULT_VOICE_ID",
@@ -91,11 +92,38 @@ CONTENT_TYPE_SUFFIXES = {
     "audio/webm": ".webm",
     "audio/x-wav": ".wav",
 }
+SECRET_PLACEHOLDER_MARKERS = (
+    "change-me",
+    "changeme",
+    "placeholder",
+    "replace-with",
+)
 
 
 def _archive_service_token() -> str:
+    """Load the private Gateway-to-Archive credential and fail closed."""
     # Never share or silently fall back to the end-user JWT signing key.
-    return os.getenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN", "").strip()
+    direct_value = os.getenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN", "").strip()
+    file_setting = os.getenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN_FILE", "").strip()
+    if direct_value and file_setting:
+        return ""
+
+    value = direct_value
+    if file_setting:
+        secret_path = Path(file_setting).expanduser()
+        if not secret_path.is_absolute():
+            secret_path = (PROJECT_ROOT / secret_path).resolve()
+        try:
+            value = secret_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            return ""
+
+    normalized = value.casefold().replace("_", "-")
+    if len(value) < 32:
+        return ""
+    if any(marker in normalized for marker in SECRET_PLACEHOLDER_MARKERS):
+        return ""
+    return value
 
 
 def require_archive_service(
@@ -241,6 +269,15 @@ def health():
         return {"status": "ok", "database": "ok"}
     finally:
         db.close()
+
+
+@app.get(
+    "/internal/ready",
+    dependencies=[Depends(require_archive_service)],
+    include_in_schema=False,
+)
+def internal_ready():
+    return health()
 
 
 @app.post("/session", dependencies=[Depends(require_archive_service)])
@@ -625,6 +662,38 @@ def get_internal_voice(voice_id: str):
         if voice is None:
             raise HTTPException(status_code=404, detail="Voice not found.")
         return _voice_payload(voice)
+    finally:
+        db.close()
+
+
+@app.get(
+    "/internal/voices/{voice_id}/audio",
+    dependencies=[Depends(require_archive_service)],
+    include_in_schema=False,
+)
+def get_internal_voice_audio(voice_id: str):
+    """Stream a reference sample to an authenticated remote model node."""
+    db = SessionLocal()
+    try:
+        voice = VoiceService.get_internal_by_id(db, voice_id)
+        if voice is None:
+            raise HTTPException(status_code=404, detail="Voice not found.")
+        try:
+            audio_path = Path(str(voice.audio_path)).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=404, detail="Voice audio not found.") from exc
+        allowed_roots = (PRIVATE_UPLOAD_DIR.resolve(), LEGACY_UPLOAD_DIR.resolve())
+        if (
+            not audio_path.is_file()
+            or audio_path.suffix.casefold() not in ALLOWED_AUDIO_SUFFIXES
+            or not any(audio_path.is_relative_to(root) for root in allowed_roots)
+        ):
+            raise HTTPException(status_code=404, detail="Voice audio not found.")
+        return FileResponse(
+            audio_path,
+            media_type=f"audio/{audio_path.suffix.casefold().lstrip('.')}",
+            filename=audio_path.name,
+        )
     finally:
         db.close()
 

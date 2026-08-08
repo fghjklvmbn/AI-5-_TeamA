@@ -1,7 +1,3 @@
-\set ON_ERROR_STOP on
-
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS memorypal_vectors.embedding_models (
     id uuid PRIMARY KEY DEFAULT public.gen_random_uuid(),
     provider text NOT NULL,
@@ -80,5 +76,3 @@ COMMENT ON COLUMN memorypal_vectors.embedding_records_768.metadata IS
     'Allowlisted chunk metadata only; raw source content remains in its authoritative protected store.';
 COMMENT ON COLUMN memorypal_vectors.embedding_records_384.metadata IS
     'Allowlisted feature metadata only; raw conversation content is prohibited.';
-
-COMMIT;

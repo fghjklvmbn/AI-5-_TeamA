@@ -57,7 +57,19 @@ docker compose --env-file .env.scale -f docker-compose.scale.yml ps
 ```
 
 Apply pending migrations. The one-shot runner waits for PostgreSQL health and
-records each applied filename in `memorypal_meta.schema_migrations`:
+records each applied filename plus its SHA-256 checksum in
+`memorypal_meta.schema_migrations`. Each migration and its ledger insert commit
+in one transaction; changing an applied file causes the runner to fail closed.
+The same job applies Gateway, Archive, and scale migrations with distinct
+version prefixes:
+
+Archive migration filenames use consecutive integer prefixes beginning at
+`1` (for example, `6_add_retention_index.sql`). Both the Python runner and the
+Compose job sort those prefixes numerically and reject gaps, duplicates, zero
+prefixes, and malformed names before applying any Archive migration.
+Applied migration files are immutable and must never be renamed or deleted;
+the runners reject both checksum drift and ledger entries with no source file
+before running pending DDL.
 
 ```powershell
 docker compose --env-file .env.scale -f docker-compose.scale.yml --profile tools run --rm migrate
@@ -80,9 +92,11 @@ empty data volume; normal schema changes must be new migration files.
 
 ## Gateway migration and cutover
 
-The runtime schema is installed by the migration command above. Keep the
-Gateway stopped during the one-time copy so rows from different tables represent
-one consistent point in time:
+The runtime schema is installed only by the migration command above. Gateway
+startup validates the required relations and migration checksums but never runs
+DDL. Before enabling `MEMORYPAL_DATABASE_URL`, start the current Gateway once in
+SQLite mode so its local compatibility migrations create every required source
+table, then stop it. Keep the Gateway stopped during the one-time copy:
 
 ```powershell
 .\stop.cmd
@@ -97,21 +111,26 @@ scale application variables in the root `.env`) and run the idempotent copier:
   --sqlite backend\gateway\data\memorypal.db
 ```
 
-The tool never modifies SQLite, copies in bounded batches, and verifies target
-row counts. After it succeeds, put `MEMORYPAL_DATABASE_URL`, pool/schema values,
+The tool never modifies SQLite, copies in bounded batches, verifies every
+`ON CONFLICT` row against the source, and requires exact per-table target row
+counts. Use a freshly migrated empty target schema; unrelated pre-existing rows
+fail verification instead of being silently accepted. After it succeeds, put
+`MEMORYPAL_DATABASE_URL`, pool/schema values,
 `MEMORYPAL_REDIS_URL`, and `MEMORYPAL_TASK_QUEUE_MODE=redis` in the root `.env`.
 `run.cmd` then starts the Gateway and the separate portrait worker; `stop.cmd`
 stops both. Keep the SQLite copy until login, chat, memory, attachment, portrait,
 and restart smoke tests have passed. Do not attempt a live dual-write cutover
 without a dedicated change-data-capture design.
 
-The Archive service remains in its isolated `memorypal_archive` schema and is
-not switched by this Gateway migration.
+The Archive service remains in its isolated `memorypal_archive` schema. Archive
+startup performs read-only schema and checksum verification; it never creates
+or alters tables. Apply the migration job before starting Archive whenever an
+Archive SQL migration is added.
 
 ## Gateway-to-Archive service credential
 
 The bundled single-host `run.cmd` workflow creates a cryptographically random
-token in the ignored `.runtime/archive-service-token` file when neither the
+token in the ignored `.runtime/secrets/archive-service-token` file when neither the
 process environment nor the root `.env` supplies
 `MEMORYPAL_ARCHIVE_SERVICE_TOKEN`. Later bundled starts reuse that local file
 and pass the same process-scoped value to Gateway and Archive.

@@ -3,7 +3,11 @@ import unittest
 from pathlib import Path
 
 from memorypal_api.database import Database
-from memorypal_api.services.memory_engine import MemoryCandidate, MemoryEngine
+from memorypal_api.services.memory_engine import (
+    MemoryCandidate,
+    MemoryEngine,
+    contains_sensitive_information,
+)
 
 
 class MemoryEngineTests(unittest.TestCase):
@@ -50,6 +54,41 @@ class MemoryEngineTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(self.db.list_memories(self.user["id"]), [])
+
+    def test_unlabeled_identifiers_and_credentials_are_not_stored(self):
+        sensitive_values = (
+            "900101-1234568",
+            "4111 1111 1111 1111",
+            "010-1234-5678",
+            "010\u200b-1234-5678",
+            "+82 (10) 1234-5678",
+            "private.person@example.com",
+            (
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+                "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+            ),
+            "sk-proj-N7pQ2vL9xR4mT8kW3cY6uH1sB5dF0aZ",
+            "N7pQ2vL9xR4mT8kW3cY6uH1sB5dF0aZ",
+            "N7pQ 2vL9 xR4m T8kW 3cY6 uH1s B5dF 0aZ9",
+        )
+        for value in sensitive_values:
+            with self.subTest(value=value):
+                self.assertTrue(contains_sensitive_information(value))
+                result = self.engine.remember(
+                    self.user["id"],
+                    self.session["id"],
+                    MemoryCandidate("fact", f"기억할 값은 {value}", 1.0, 1.0),
+                )
+                self.assertIsNone(result)
+        self.assertEqual(self.db.list_memories(self.user["id"]), [])
+
+    def test_normal_dates_and_short_numbers_are_not_false_positives(self):
+        content = "회의는 8월 20일 오후 3시에 시작해"
+        self.assertFalse(contains_sensitive_information(content))
+        result = self.engine.remember(
+            self.user["id"], self.session["id"], MemoryCandidate("schedule", content),
+        )
+        self.assertIsNotNone(result)
 
     def test_unrelated_high_importance_memory_is_completely_excluded(self):
         self.engine.remember(self.user["id"], self.session["id"], MemoryCandidate("schedule", "다음 주 화요일 치과 예약", 1.0, 1.0))

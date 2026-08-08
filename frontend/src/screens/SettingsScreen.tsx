@@ -6,7 +6,7 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import { BlurView } from 'expo-blur';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { api } from '../api';
@@ -86,38 +86,123 @@ export function SettingsScreen({
   const [recording, setRecording] = useState(false);
   const [saving, setSaving] = useState(false);
   const [voiceMessage, setVoiceMessage] = useState('');
+  const mountedRef = useRef(true);
+  const voiceFormVisibleRef = useRef(false);
+  const recordingRef = useRef(false);
+  const recordingModeRef = useRef(false);
+  const recordingTransitionRef = useRef(false);
+  const recordingOperationGenerationRef = useRef(0);
+  const voiceStateGenerationRef = useRef(0);
+  const voiceRefreshControllerRef = useRef<AbortController | undefined>(undefined);
 
-  const loadVoices = useCallback(() => {
-    void api.voices(token).then(setVoices).catch(() => setVoices([]));
-    void api.voiceStatus(token).then(setVoiceStatus).catch(() => setVoiceStatus(undefined));
+  const restorePlaybackMode = useCallback(async () => {
+    if (!recordingModeRef.current) return;
+    recordingModeRef.current = false;
+    try {
+      await setAudioModeAsync({ allowsRecording: false });
+    } catch {
+      // Teardown cannot present a useful error; playback config is applied again when needed.
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      recordingOperationGenerationRef.current += 1;
+      voiceRefreshControllerRef.current?.abort();
+      voiceRefreshControllerRef.current = undefined;
+      const stopPending = recordingRef.current
+        ? sampleRecorder.stop().catch(() => undefined)
+        : Promise.resolve();
+      recordingRef.current = false;
+      recordingTransitionRef.current = false;
+      void stopPending.finally(() => restorePlaybackMode());
+    };
+  }, [restorePlaybackMode, sampleRecorder]);
+
+  const refreshVoiceState = useCallback(async (generation: number, signal: AbortSignal, preserveOnError = false) => {
+    const [voicesResult, statusResult] = await Promise.allSettled([
+      api.voices(token, signal),
+      api.voiceStatus(token, signal),
+    ] as const);
+    if (!mountedRef.current || signal.aborted || voiceStateGenerationRef.current !== generation) return;
+    if (voicesResult.status === 'fulfilled') setVoices(voicesResult.value);
+    else if (!preserveOnError) setVoices([]);
+    if (statusResult.status === 'fulfilled') setVoiceStatus(statusResult.value);
+    else if (!preserveOnError) setVoiceStatus(undefined);
   }, [token]);
 
-  useEffect(loadVoices, [loadVoices]);
+  const beginVoiceRefresh = useCallback((generation: number, preserveOnError = false) => {
+    voiceRefreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    voiceRefreshControllerRef.current = controller;
+    void refreshVoiceState(generation, controller.signal, preserveOnError).finally(() => {
+      if (voiceRefreshControllerRef.current === controller) voiceRefreshControllerRef.current = undefined;
+    });
+    return controller;
+  }, [refreshVoiceState]);
+
+  useEffect(() => {
+    const generation = ++voiceStateGenerationRef.current;
+    const controller = beginVoiceRefresh(generation);
+    return () => controller.abort();
+  }, [beginVoiceRefresh]);
 
   const toggleSampleRecording = async () => {
+    if (recordingTransitionRef.current) return;
+    const operationGeneration = ++recordingOperationGenerationRef.current;
+    recordingTransitionRef.current = true;
     try {
       setVoiceMessage('');
-      if (recording) {
+      if (recordingRef.current) {
+        recordingRef.current = false;
+        setRecording(false);
         await sampleRecorder.stop();
         const recordedUri = sampleRecorder.uri;
         if (!recordedUri) throw new Error('녹음 파일을 만들지 못했습니다. 다시 녹음해 주세요.');
-        setRecording(false);
+        if (
+          !mountedRef.current
+          || !voiceFormVisibleRef.current
+          || recordingOperationGenerationRef.current !== operationGeneration
+        ) return;
         setSampleUri(recordedUri);
-        await setAudioModeAsync({ allowsRecording: false });
         setVoiceMessage('샘플 녹음이 준비됐어요. 입력한 문장과 녹음 내용이 같은지 확인해 주세요.');
         return;
       }
       const permission = await requestRecordingPermissionsAsync();
       if (!permission.granted) throw new Error('개인화 음성을 만들려면 마이크 권한이 필요합니다.');
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      recordingModeRef.current = true;
+      if (
+        !mountedRef.current
+        || !voiceFormVisibleRef.current
+        || recordingOperationGenerationRef.current !== operationGeneration
+      ) return;
       await sampleRecorder.prepareToRecordAsync();
+      if (
+        !mountedRef.current
+        || !voiceFormVisibleRef.current
+        || recordingOperationGenerationRef.current !== operationGeneration
+      ) return;
       sampleRecorder.record();
+      recordingRef.current = true;
       setSampleUri(undefined);
       setRecording(true);
       setVoiceMessage('아래 참조 문장을 자연스럽게 읽고 녹음을 완료해 주세요.');
     } catch (reason) {
-      setRecording(false);
-      setVoiceMessage(reason instanceof Error ? reason.message : '녹음을 시작하지 못했습니다.');
+      recordingRef.current = false;
+      if (
+        mountedRef.current
+        && voiceFormVisibleRef.current
+        && recordingOperationGenerationRef.current === operationGeneration
+      ) {
+        setRecording(false);
+        setVoiceMessage(reason instanceof Error ? reason.message : '녹음을 시작하지 못했습니다.');
+      }
+    } finally {
+      recordingTransitionRef.current = false;
+      if (!recordingRef.current) await restorePlaybackMode();
     }
   };
 
@@ -144,17 +229,50 @@ export function SettingsScreen({
         referenceText.trim(),
         description.trim(),
       );
+      if (!mountedRef.current) return;
+      const generation = ++voiceStateGenerationRef.current;
+      const personalizedCountInList = voices.filter((item) => item.is_personalized && item.id !== voice.id).length + 1;
       setVoices((current) => [voice, ...current.filter((item) => item.id !== voice.id)]);
+      setVoiceStatus((current) => ({
+        has_personalized_voice: true,
+        personalized_voice_count: Math.max(
+          personalizedCountInList,
+          current?.personalized_voice_count ?? 0,
+        ),
+      }));
+      beginVoiceRefresh(generation, true);
       setVoiceName('');
       setDescription('');
       setSampleUri(undefined);
+      voiceFormVisibleRef.current = false;
       setShowVoiceForm(false);
       setVoiceMessage('개인화 음성이 등록됐어요.');
     } catch (reason) {
-      setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 등록하지 못했습니다.');
+      if (mountedRef.current) {
+        setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 등록하지 못했습니다.');
+      }
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
+  };
+
+  const toggleVoiceForm = () => {
+    const nextVisible = !showVoiceForm;
+    if (!nextVisible) recordingOperationGenerationRef.current += 1;
+    voiceFormVisibleRef.current = nextVisible;
+    setShowVoiceForm(nextVisible);
+    setVoiceMessage('');
+    if (nextVisible || !recordingRef.current) return;
+
+    recordingRef.current = false;
+    recordingTransitionRef.current = true;
+    setRecording(false);
+    void sampleRecorder.stop()
+      .catch(() => undefined)
+      .finally(() => {
+        recordingTransitionRef.current = false;
+        void restorePlaybackMode();
+      });
   };
 
   return (
@@ -216,6 +334,19 @@ export function SettingsScreen({
             {persona === 'emotional_companion' && <Text style={styles.personaSelected}>선택됨</Text>}
           </View>
           <Text style={styles.personaDescription}>감정을 세심하게 듣고 공감하는 대화 동반자</Text>
+        </Pressable>
+        <View style={styles.divider} />
+        <Pressable
+          onPress={() => onPersonaChange('none')}
+          style={[styles.personaOption, persona === 'none' && styles.personaOptionActive]}
+        >
+          <View style={styles.personaHeader}>
+            <Text style={styles.personaTitle}>없음</Text>
+            {persona === 'none' && <Text style={styles.personaSelected}>선택됨</Text>}
+          </View>
+          <Text style={styles.personaDescription}>
+            특정 역할을 연기하지 않고 기억·검색 근거와 아는 범위에서 대화
+          </Text>
         </Pressable>
       </View>
 
@@ -358,7 +489,7 @@ export function SettingsScreen({
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>개인화 음성</Text>
         <Pressable
-          onPress={() => { setShowVoiceForm((value) => !value); setVoiceMessage(''); }}
+          onPress={toggleVoiceForm}
           style={styles.addVoiceButton}
         >
           <Text style={styles.addVoiceButtonText}>{showVoiceForm ? '닫기' : '+ 음성 추가'}</Text>

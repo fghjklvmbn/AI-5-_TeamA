@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -17,12 +17,17 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 import { ThemeProvider, useTheme } from './src/theme';
 import type { ChatResponse, Message, Persona, ReasoningEffort } from './src/types';
 
+function persistPreference(task: Promise<void>): void {
+  void task.catch(() => undefined);
+}
+
 function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDarkModeChange: (enabled: boolean) => void }) {
   const { loading, token, user, logout } = useAuth();
   const [tab, setTab] = useState<Tab>('home');
   const [sessionId, setSessionId] = useState<string>();
   const [casualMode, setCasualMode] = useState(false);
   const [persona, setPersona] = useState<Persona>('default');
+  const [voiceId, setVoiceId] = useState<string>();
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(true);
   const [internetEnabled, setInternetEnabled] = useState(false);
   const [thinkingMode, setThinkingMode] = useState(false);
@@ -33,11 +38,32 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
   const { colors } = useTheme();
   const styles = createStyles(colors);
 
+  const openVoiceConversation = useCallback((response: ChatResponse) => {
+    setSessionId(response.session.id);
+    setIncomingMessage(response.message);
+    setTab('chat');
+  }, []);
+
+  const updateConversation = useCallback((id: string) => {
+    setSessionId(id || undefined);
+  }, []);
+
+  const updateVoiceProcessing = useCallback((active: boolean, transcript = '') => {
+    setVoiceProcessing({ active, transcript: active ? transcript : '' });
+  }, []);
+
+  const consumeIncomingMessage = useCallback(() => setIncomingMessage(undefined), []);
+
   useEffect(() => {
     if (!user) {
+      setTab('home');
+      setSessionId(undefined);
+      setIncomingMessage(undefined);
+      setVoiceProcessing({ active: false, transcript: '' });
       setAccountOpen(false);
       setCasualMode(false);
       setPersona('default');
+      setVoiceId(undefined);
       setVoiceReplyEnabled(true);
       setInternetEnabled(false);
       setThinkingMode(false);
@@ -45,84 +71,75 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       return;
     }
     let active = true;
+    setTab('home');
+    setSessionId(undefined);
+    setIncomingMessage(undefined);
+    setVoiceProcessing({ active: false, transcript: '' });
+    setVoiceId(undefined);
     setReasoningEffort('medium');
     void AsyncStorage.getItem(`memorypal.casualMode.${user.id}`).then((stored) => {
       if (active) setCasualMode(stored === 'true');
-    });
+    }).catch(() => undefined);
     void AsyncStorage.getItem(`memorypal.persona.${user.id}`).then((stored) => {
-      if (active && (stored === 'default' || stored === 'emotional_companion')) {
+      if (active && (stored === 'default' || stored === 'emotional_companion' || stored === 'none')) {
         setPersona(stored);
       }
-    });
+    }).catch(() => undefined);
     void AsyncStorage.getItem(`memorypal.voiceReplyEnabled.${user.id}`).then((stored) => {
       if (active) setVoiceReplyEnabled(stored !== 'false');
-    });
+    }).catch(() => undefined);
     void AsyncStorage.getItem(`memorypal.internetEnabled.${user.id}`).then((stored) => {
       if (active) setInternetEnabled(stored === 'true');
-    });
+    }).catch(() => undefined);
     void AsyncStorage.getItem(`memorypal.thinkingMode.${user.id}`).then((stored) => {
       if (active) setThinkingMode(stored === 'true');
-    });
+    }).catch(() => undefined);
     void AsyncStorage.getItem(`memorypal.reasoningEffort.${user.id}`).then((stored) => {
       if (active && (stored === 'low' || stored === 'medium' || stored === 'high')) {
         setReasoningEffort(stored);
       }
-    });
+    }).catch(() => undefined);
     return () => { active = false; };
-  }, [user]);
+  }, [user?.id]);
 
   if (loading) {
     return <View style={styles.loading}><ActivityIndicator color={colors.primary} size="large" /></View>;
   }
   if (!token || !user) return <LoginScreen />;
 
-  const openVoiceConversation = (response: ChatResponse) => {
-    setSessionId(response.session.id);
-    setIncomingMessage(response.message);
-    setTab('chat');
-  };
-
-  const updateConversation = (id: string) => {
-    setSessionId(id || undefined);
-  };
-
   const updateCasualMode = (enabled: boolean) => {
     setCasualMode(enabled);
-    void AsyncStorage.setItem(`memorypal.casualMode.${user.id}`, String(enabled));
+    persistPreference(AsyncStorage.setItem(`memorypal.casualMode.${user.id}`, String(enabled)));
   };
 
   const updatePersona = (value: Persona) => {
     setPersona(value);
-    void AsyncStorage.setItem(`memorypal.persona.${user.id}`, value);
+    persistPreference(AsyncStorage.setItem(`memorypal.persona.${user.id}`, value));
   };
 
   const updateVoiceReply = (enabled: boolean) => {
     setVoiceReplyEnabled(enabled);
-    void AsyncStorage.setItem(`memorypal.voiceReplyEnabled.${user.id}`, String(enabled));
+    persistPreference(AsyncStorage.setItem(`memorypal.voiceReplyEnabled.${user.id}`, String(enabled)));
   };
 
   const updateInternetEnabled = (enabled: boolean) => {
     setInternetEnabled(enabled);
-    void AsyncStorage.setItem(`memorypal.internetEnabled.${user.id}`, String(enabled));
+    persistPreference(AsyncStorage.setItem(`memorypal.internetEnabled.${user.id}`, String(enabled)));
   };
 
   const updateThinkingMode = (enabled: boolean) => {
     setThinkingMode(enabled);
-    void AsyncStorage.setItem(`memorypal.thinkingMode.${user.id}`, String(enabled));
+    persistPreference(AsyncStorage.setItem(`memorypal.thinkingMode.${user.id}`, String(enabled)));
   };
 
   const updateReasoningEffort = (effort: ReasoningEffort) => {
     setReasoningEffort(effort);
-    void AsyncStorage.setItem(`memorypal.reasoningEffort.${user.id}`, effort);
+    persistPreference(AsyncStorage.setItem(`memorypal.reasoningEffort.${user.id}`, effort));
   };
 
   const updateDarkMode = (enabled: boolean) => {
     onDarkModeChange(enabled);
-    void AsyncStorage.setItem('memorypal.darkMode', String(enabled));
-  };
-
-  const updateVoiceProcessing = (active: boolean, transcript = '') => {
-    setVoiceProcessing({ active, transcript: active ? transcript : '' });
+    persistPreference(AsyncStorage.setItem('memorypal.darkMode', String(enabled)));
   };
 
   return (
@@ -133,22 +150,24 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
           <AccountScreen user={user} onClose={() => setAccountOpen(false)} />
         ) : (<>
         <View style={styles.screen}>
-          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceReplyEnabled={voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={thinkingMode} reasoningEffort={reasoningEffort} onPersonaChange={updatePersona} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} onOpenAccount={() => setAccountOpen(true)} onLogout={logout} />}
+          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceId={voiceId} voiceReplyEnabled={voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={thinkingMode} reasoningEffort={reasoningEffort} onPersonaChange={updatePersona} onVoiceIdChange={setVoiceId} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} onOpenAccount={() => setAccountOpen(true)} onLogout={logout} />}
           <View
             pointerEvents={tab === 'chat' ? 'auto' : 'none'}
             style={[styles.chatScreen, tab !== 'chat' && styles.hiddenScreen]}
           >
             <ChatScreen
               token={token}
+              isActive={tab === 'chat'}
               activeSessionId={sessionId}
               casualMode={casualMode}
               persona={persona}
+              voiceId={voiceId}
               voiceReplyEnabled={voiceReplyEnabled}
               internetEnabled={internetEnabled}
               thinkingMode={thinkingMode}
               reasoningEffort={reasoningEffort}
               incomingMessage={incomingMessage}
-              onIncomingMessageConsumed={() => setIncomingMessage(undefined)}
+              onIncomingMessageConsumed={consumeIncomingMessage}
               onSessionChange={updateConversation}
               onVoiceProcessingChange={updateVoiceProcessing}
             />
@@ -192,7 +211,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
-    void AsyncStorage.getItem('memorypal.darkMode').then((stored) => setDarkMode(stored === 'true'));
+    void AsyncStorage.getItem('memorypal.darkMode').then((stored) => setDarkMode(stored === 'true')).catch(() => undefined);
   }, []);
 
   return (

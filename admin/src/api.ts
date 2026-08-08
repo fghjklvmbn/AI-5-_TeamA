@@ -11,8 +11,8 @@ import type {
 const explicitApiUrl = import.meta.env.VITE_API_URL as string | undefined;
 const isLocal = ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
 export const API_URL = (explicitApiUrl || (isLocal
-  ? 'http://127.0.0.1:8010/v1'
-  : '/api_memoripal/project3/gateway/v1')).replace(/\/$/, '');
+  ? 'http://127.0.0.1:8000/v1'
+  : '/api_memoripal/gateway/v1')).replace(/\/$/, '');
 
 const TOKEN_KEY = 'memorypal.admin.session';
 
@@ -47,6 +47,13 @@ type RawOverview = {
     user_count: number;
     average_latency_ms: number;
     maximum_latency_ms: number;
+  }>;
+  trend: Array<{
+    bucket: string;
+    transaction_count: number;
+    succeeded_count: number;
+    failed_count: number;
+    average_latency_ms: number;
   }>;
 };
 
@@ -102,39 +109,7 @@ function normalizeList<T>(payload: ListResult<T> | T[]): ListResult<T> {
   };
 }
 
-function buildTrend(events: TransactionEvent[], from: string, to: string) {
-  const start = new Date(from).getTime();
-  const end = new Date(to).getTime();
-  const bucketCount = 12;
-  const width = Math.max(1, (end - start) / bucketCount);
-  const points = Array.from({ length: bucketCount }, (_, index) => ({
-    bucket: new Date(start + width * index).toISOString(),
-    transaction_count: 0,
-    succeeded_count: 0,
-    failed_count: 0,
-    average_latency_ms: 0,
-    latency_total: 0,
-    latency_count: 0,
-  }));
-  events.forEach((event) => {
-    const at = new Date(event.occurred_at).getTime();
-    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((at - start) / width)));
-    const point = points[index];
-    point.transaction_count += 1;
-    if (event.status === 'succeeded') point.succeeded_count += 1;
-    if (event.status === 'failed' || event.status === 'cancelled') point.failed_count += 1;
-    if (event.latency_ms !== null) {
-      point.latency_total += Number(event.latency_ms || 0);
-      point.latency_count += 1;
-    }
-  });
-  return points.map(({ latency_total, latency_count, ...point }) => ({
-    ...point,
-    average_latency_ms: latency_count ? latency_total / latency_count : 0,
-  }));
-}
-
-function normalizeOverview(raw: RawOverview, events: TransactionEvent[], from: string, to: string): Overview {
+function normalizeOverview(raw: RawOverview): Overview {
   const statusCounts: Record<string, number> = {};
   const pathMap = new Map<string, { transaction_count: number; succeeded: number; latency: number }>();
   raw.routes.forEach((row) => {
@@ -154,7 +129,7 @@ function normalizeOverview(raw: RawOverview, events: TransactionEvent[], from: s
     average_latency_ms: Number(raw.average_latency_ms || 0),
     failed_count: Number(raw.failed_count || 0),
     active_operations: ['queued', 'running', 'retrying'].reduce((sum, key) => sum + Number(raw.operations?.[key] || 0), 0),
-    trend: buildTrend(events, from, to),
+    trend: raw.trend || [],
     status_counts: statusCounts,
     top_paths: [...pathMap.entries()].map(([http_path, metric]) => ({
       http_path,
@@ -192,11 +167,10 @@ export const adminApi = {
     return request<void>('/auth/logout', { method: 'POST' }, token);
   },
   async overview(token: string, from: string, to: string, signal?: AbortSignal) {
-    const [overview, eventPayload] = await Promise.all([
-      request<RawOverview>(`/admin/overview${query({ from, to })}`, {}, token, signal),
-      request<ListResult<TransactionEvent>>(`/admin/transactions${query({ from, to, limit: 200 })}`, {}, token, signal),
-    ]);
-    return normalizeOverview(overview, eventPayload.items || [], from, to);
+    const overview = await request<RawOverview>(
+      `/admin/overview${query({ from, to })}`, {}, token, signal,
+    );
+    return normalizeOverview(overview);
   },
   async transactions(
     token: string,

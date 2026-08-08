@@ -69,7 +69,7 @@ class ChatRequest(BaseModel):
     voice_id: str | None = None
     speak: bool = True
     casual_mode: bool = False
-    persona: Literal["default", "emotional_companion"] = "default"
+    persona: Literal["default", "emotional_companion", "none"] = "default"
     internet_enabled: bool = False
     thinking_mode: bool = False
     reasoning_effort: Literal["low", "medium", "high"] = "medium"
@@ -79,7 +79,7 @@ class RegenerateRequest(BaseModel):
     voice_id: str | None = None
     speak: bool = True
     casual_mode: bool = False
-    persona: Literal["default", "emotional_companion"] = "default"
+    persona: Literal["default", "emotional_companion", "none"] = "default"
     internet_enabled: bool = False
     thinking_mode: bool = False
     reasoning_effort: Literal["low", "medium", "high"] = "medium"

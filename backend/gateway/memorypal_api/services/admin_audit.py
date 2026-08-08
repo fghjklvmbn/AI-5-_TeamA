@@ -55,27 +55,31 @@ def install_admin_audit_middleware(app) -> None:
             normalized_path = str(getattr(route, "path", request.url.path))
             admin_ref = None
             user_id = getattr(request.state, "user_id", None)
-            try:
-                if user_id:
-                    row = await run_in_threadpool(
-                        request.app.state.db.get_user_by_id, user_id,
+            # Invalid/missing credentials are attacker-controlled traffic, not
+            # an admin action. Persisting each anonymous 4xx would allow an
+            # unauthenticated caller to grow the audit table without bound.
+            if status_code < 400 or user_id:
+                try:
+                    if user_id:
+                        row = await run_in_threadpool(
+                            request.app.state.db.get_user_by_id, user_id,
+                        )
+                        if row is not None and row["admin_ref"]:
+                            admin_ref = str(row["admin_ref"])
+                    await run_in_threadpool(
+                        request.app.state.db.record_admin_audit_event,
+                        admin_ref=admin_ref,
+                        request_id=request_id,
+                        correlation_id=correlation_id,
+                        http_method=request.method,
+                        http_path=normalized_path,
+                        http_status=status_code,
+                        latency_ms=latency_ms,
+                        action=getattr(request.state, "admin_action", None),
+                        target_admin_ref=getattr(request.state, "admin_target_ref", None),
+                        before_status=getattr(request.state, "admin_before_status", None),
+                        after_status=getattr(request.state, "admin_after_status", None),
                     )
-                    if row is not None and row["admin_ref"]:
-                        admin_ref = str(row["admin_ref"])
-                await run_in_threadpool(
-                    request.app.state.db.record_admin_audit_event,
-                    admin_ref=admin_ref,
-                    request_id=request_id,
-                    correlation_id=correlation_id,
-                    http_method=request.method,
-                    http_path=normalized_path,
-                    http_status=status_code,
-                    latency_ms=latency_ms,
-                    action=getattr(request.state, "admin_action", None),
-                    target_admin_ref=getattr(request.state, "admin_target_ref", None),
-                    before_status=getattr(request.state, "admin_before_status", None),
-                    after_status=getattr(request.state, "admin_after_status", None),
-                )
-            except Exception:
-                # Audit persistence must not replace an otherwise valid API response.
-                logger.exception("Failed to persist admin access audit event")
+                except Exception:
+                    # Audit persistence must not replace an otherwise valid API response.
+                    logger.exception("Failed to persist admin access audit event")

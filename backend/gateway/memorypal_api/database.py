@@ -72,6 +72,18 @@ class Database:
                 db.rollback()
                 raise
 
+    @contextmanager
+    def read_transaction(self):
+        """Keep a multi-query read model on one database snapshot."""
+        with closing(self.connect()) as db:
+            db.execute("BEGIN")
+            try:
+                yield db
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
     def _require_account_fence(
         self,
         db,
@@ -2281,8 +2293,8 @@ class Database:
         return self.fetch_all(
             "SELECT event_type, status, COALESCE(http_path, '') AS http_path, "
             "COUNT(*) AS transaction_count, COUNT(DISTINCT user_id) AS user_count, "
-            "ROUND(AVG(latency_ms), 2) AS average_latency_ms, "
-            "MAX(latency_ms) AS maximum_latency_ms "
+            "COALESCE(ROUND(AVG(latency_ms), 2), 0) AS average_latency_ms, "
+            "COALESCE(MAX(latency_ms), 0) AS maximum_latency_ms "
             f"FROM user_transaction_events{where} "
             "GROUP BY event_type, status, http_path "
             "ORDER BY transaction_count DESC, event_type ASC",
@@ -2316,32 +2328,54 @@ class Database:
             "occurred_at", occurred_from, occurred_to,
         )
         event_where = f" WHERE {' AND '.join(event_clauses)}" if event_clauses else ""
-        event_row = self.fetch_one(
-            "SELECT COUNT(*) AS transaction_count, "
-            "COUNT(DISTINCT user_id) AS active_user_count, "
-            "SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_count, "
-            "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count, "
-            "ROUND(AVG(latency_ms), 2) AS average_latency_ms, "
-            "MAX(latency_ms) AS maximum_latency_ms "
-            f"FROM user_transaction_events{event_where}",
-            event_params,
-        )
         operation_clauses, operation_params = self._admin_time_filter(
             "updated_at", occurred_from, occurred_to,
         )
         operation_where = (
             f" WHERE {' AND '.join(operation_clauses)}" if operation_clauses else ""
         )
-        operation_rows = self.fetch_all(
-            "SELECT status, COUNT(*) AS operation_count FROM operation_states"
-            f"{operation_where} GROUP BY status",
-            operation_params,
-        )
-        outbox_rows = self.fetch_all(
-            "SELECT status, COUNT(*) AS event_count FROM event_outbox "
-            "WHERE status <> 'published' GROUP BY status"
-        )
-        total_users = self.fetch_one("SELECT COUNT(*) AS user_count FROM users")
+        # Every value returned by the overview belongs to the same database
+        # snapshot. This prevents totals, trend buckets, and route summaries
+        # from disagreeing when events arrive while the dashboard is loading.
+        with self.read_transaction() as db:
+            event_row = db.execute(
+                "SELECT COUNT(*) AS transaction_count, "
+                "COUNT(DISTINCT user_id) AS active_user_count, "
+                "SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_count, "
+                "SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) "
+                "AS failed_count, "
+                "COALESCE(ROUND(AVG(latency_ms), 2), 0) AS average_latency_ms, "
+                "COALESCE(MAX(latency_ms), 0) AS maximum_latency_ms "
+                f"FROM user_transaction_events{event_where}",
+                tuple(event_params),
+            ).fetchone()
+            operation_rows = db.execute(
+                "SELECT status, COUNT(*) AS operation_count FROM operation_states"
+                f"{operation_where} GROUP BY status",
+                tuple(operation_params),
+            ).fetchall()
+            outbox_rows = db.execute(
+                "SELECT status, COUNT(*) AS event_count FROM event_outbox "
+                "WHERE status <> 'published' GROUP BY status"
+            ).fetchall()
+            total_users = db.execute(
+                "SELECT COUNT(*) AS user_count FROM users"
+            ).fetchone()
+            route_rows = db.execute(
+                "SELECT event_type, status, COALESCE(http_path, '') AS http_path, "
+                "COUNT(*) AS transaction_count, COUNT(DISTINCT user_id) AS user_count, "
+                "COALESCE(ROUND(AVG(latency_ms), 2), 0) AS average_latency_ms, "
+                "COALESCE(MAX(latency_ms), 0) AS maximum_latency_ms "
+                f"FROM user_transaction_events{event_where} "
+                "GROUP BY event_type, status, http_path "
+                "ORDER BY transaction_count DESC, event_type ASC",
+                tuple(event_params),
+            ).fetchall()
+            trend = self._admin_transaction_trend_with_connection(
+                db,
+                occurred_from=occurred_from,
+                occurred_to=occurred_to,
+            )
         return {
             "total_user_count": int(total_users["user_count"] if total_users else 0),
             "transaction_count": int(event_row["transaction_count"] if event_row else 0),
@@ -2360,7 +2394,81 @@ class Database:
             "outbox": {
                 str(row["status"]): int(row["event_count"]) for row in outbox_rows
             },
+            "routes": [dict(row) for row in route_rows],
+            "trend": trend,
         }
+
+    def admin_transaction_trend(
+        self,
+        *,
+        occurred_from: str | None,
+        occurred_to: str | None,
+        bucket_count: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Aggregate the complete time range into a bounded number of buckets."""
+        with self.read_transaction() as db:
+            return self._admin_transaction_trend_with_connection(
+                db,
+                occurred_from=occurred_from,
+                occurred_to=occurred_to,
+                bucket_count=bucket_count,
+            )
+
+    @staticmethod
+    def _admin_transaction_trend_with_connection(
+        db,
+        *,
+        occurred_from: str | None,
+        occurred_to: str | None,
+        bucket_count: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Build all chart buckets with one aggregate query on the caller snapshot."""
+        if occurred_from is None or occurred_to is None:
+            return []
+        start = datetime.fromisoformat(occurred_from)
+        end = datetime.fromisoformat(occurred_to)
+        buckets = max(1, min(48, int(bucket_count)))
+        width = (end - start) / buckets
+        boundaries: list[tuple[datetime, datetime]] = []
+        case_parts: list[str] = []
+        case_params: list[Any] = []
+        for index in range(buckets):
+            bucket_start = start + width * index
+            bucket_end = end if index == buckets - 1 else start + width * (index + 1)
+            boundaries.append((bucket_start, bucket_end))
+            case_parts.append("WHEN occurred_at >= ? AND occurred_at < ? THEN ?")
+            case_params.extend((bucket_start.isoformat(), bucket_end.isoformat(), index))
+
+        rows = db.execute(
+            "SELECT CASE " + " ".join(case_parts) + " END AS bucket_index, "
+            "COUNT(*) AS transaction_count, "
+            "SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_count, "
+            "SUM(CASE WHEN status IN ('failed', 'cancelled') THEN 1 ELSE 0 END) "
+            "AS failed_count, ROUND(AVG(latency_ms), 2) AS average_latency_ms "
+            "FROM user_transaction_events WHERE occurred_at >= ? AND occurred_at < ? "
+            "GROUP BY 1 ORDER BY 1",
+            tuple(case_params + [start.isoformat(), end.isoformat()]),
+        ).fetchall()
+        by_bucket = {
+            int(row["bucket_index"]): row
+            for row in rows
+            if row["bucket_index"] is not None
+        }
+        result: list[dict[str, Any]] = []
+        for index, (bucket_start, _bucket_end) in enumerate(boundaries):
+            row = by_bucket.get(index)
+            result.append(
+                {
+                    "bucket": bucket_start.isoformat(),
+                    "transaction_count": int((row["transaction_count"] if row else 0) or 0),
+                    "succeeded_count": int((row["succeeded_count"] if row else 0) or 0),
+                    "failed_count": int((row["failed_count"] if row else 0) or 0),
+                    "average_latency_ms": float(
+                        (row["average_latency_ms"] if row else 0) or 0
+                    ),
+                }
+            )
+        return result
 
     def list_admin_transactions(
         self,
@@ -2556,4 +2664,3 @@ class Database:
                 now, now,
             ),
         )
-

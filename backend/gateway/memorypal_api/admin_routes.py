@@ -99,15 +99,11 @@ def overview(
     result = request.app.state.db.admin_overview(
         occurred_from=range_from, occurred_to=range_to,
     )
-    routes = request.app.state.db.summarize_transaction_events(
-        occurred_from=range_from, occurred_to=range_to,
-    )
     return {
         **result,
         "generated_at": datetime.now(UTC).isoformat(),
         "range_from": range_from,
         "range_to": range_to,
-        "routes": _rows(routes)[:200],
     }
 
 

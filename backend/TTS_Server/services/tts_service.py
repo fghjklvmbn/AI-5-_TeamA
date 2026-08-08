@@ -1,13 +1,12 @@
 import os
+import re
+import warnings
 import torch
 import uuid
 import soundfile as sf
-import hashlib
 
 from collections import OrderedDict
 from threading import Lock
-from urllib.parse import urlparse
-from urllib.request import urlopen
 
 from pathlib import Path
 from services.config.tts_config import(
@@ -15,51 +14,131 @@ from services.config.tts_config import(
 )
 
 
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+ALLOWED_REFERENCE_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
+MAX_REFERENCE_AUDIO_BYTES = 20 * 1024 * 1024
+WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _reference_audio_roots():
+    configured = os.getenv("MEMORYPAL_TTS_REFERENCE_AUDIO_ROOTS", "").strip()
+    if configured:
+        values = [value.strip() for value in configured.split(os.pathsep) if value.strip()]
+    else:
+        archive_root = SERVICE_ROOT.parent / "archive_service"
+        values = [
+            str(archive_root / "private_voice_uploads"),
+            str(archive_root / "voice_uploads"),
+            str(SERVICE_ROOT / "reference_audio"),
+        ]
+    upload_root = os.getenv("MEMORYPAL_TTS_REFERENCE_UPLOAD_DIR", "").strip()
+    if upload_root:
+        values.append(upload_root)
+    roots = []
+    for value in values:
+        path = Path(value)
+        if not path.is_absolute():
+            path = SERVICE_ROOT / path
+        roots.append(path.resolve())
+    return tuple(roots)
+
+
 class TTSService:
 
     def __init__(self):
 
         self.model = None
-        self.engine = os.getenv(
-            "MEMORYPAL_TTS_ENGINE",
-            "faster"
+        requested_device = os.getenv(
+            "MEMORYPAL_TTS_DEVICE",
+            os.getenv("MEMORYPAL_DEVICE", "auto"),
         ).strip().lower()
+        if requested_device not in {"auto", "cpu", "cuda", "rocm"}:
+            raise RuntimeError("MEMORYPAL_TTS_DEVICE must be auto, cpu, cuda, or rocm")
+        cuda = getattr(torch, "cuda", None)
+        cuda_available = bool(cuda and cuda.is_available())
+        rocm_available = bool(
+            cuda_available and getattr(getattr(torch, "version", None), "hip", None)
+        )
+        if requested_device in {"cuda", "rocm"} and not cuda_available:
+            warnings.warn(
+                f"{requested_device.upper()} was requested for TTS but is unavailable; "
+                "falling back to CPU.",
+                RuntimeWarning,
+            )
+            self.accelerator = "cpu"
+        elif requested_device == "rocm" and not rocm_available:
+            warnings.warn(
+                "ROCm was requested for TTS but this PyTorch build has no HIP runtime; "
+                "falling back to CPU.",
+                RuntimeWarning,
+            )
+            self.accelerator = "cpu"
+        elif requested_device == "auto":
+            self.accelerator = (
+                "rocm" if rocm_available else "cuda" if cuda_available else "cpu"
+            )
+        elif requested_device == "cuda" and rocm_available:
+            self.accelerator = "rocm"
+        else:
+            self.accelerator = requested_device
+        # ROCm PyTorch deliberately uses the CUDA device namespace for API
+        # compatibility. The accelerator field keeps the actual backend clear.
+        self.device = "cuda" if self.accelerator in {"cuda", "rocm"} else "cpu"
+
+        requested_engine = os.getenv(
+            "MEMORYPAL_TTS_ENGINE",
+            "auto",
+        ).strip().lower()
+        if requested_engine not in {"auto", "faster", "upstream"}:
+            raise RuntimeError("MEMORYPAL_TTS_ENGINE must be auto, faster, or upstream")
+        if self.accelerator != "cuda":
+            if requested_engine == "faster":
+                warnings.warn(
+                    "The faster TTS engine requires NVIDIA CUDA; using upstream.",
+                    RuntimeWarning,
+                )
+            self.engine = "upstream"
+        else:
+            self.engine = "faster" if requested_engine == "auto" else requested_engine
         self._prompt_cache = OrderedDict()
         self._prompt_cache_size = 8
         self._inference_lock = Lock()
 
     def _localize_ref_audio(self, ref_audio):
-        value = str(ref_audio)
-        parsed = urlparse(value)
-        if parsed.scheme not in ("http", "https"):
-            return value
+        value = str(ref_audio or "").strip()
+        if not value or "\x00" in value:
+            raise ValueError("Reference audio path is invalid.")
 
-        cache_dir = Path("reference_cache")
-        cache_dir.mkdir(exist_ok=True)
-        suffix = Path(parsed.path).suffix.lower()
-        if suffix not in (".wav", ".mp3", ".flac", ".ogg", ".m4a"):
-            suffix = ".wav"
-        cache_key = hashlib.sha256(value.encode("utf-8")).hexdigest()
-        target = cache_dir / f"{cache_key}{suffix}"
-        if target.exists() and target.stat().st_size > 0:
-            return str(target.resolve())
+        # Voice samples are provisioned by the Archive service on a shared,
+        # explicitly allowlisted volume. Fetching caller-controlled URLs here
+        # would turn the GPU service into an SSRF proxy.
+        scheme_separator = value.find("://")
+        is_windows_path = WINDOWS_ABSOLUTE_PATH_RE.match(value) is not None
+        if scheme_separator > 0 and not is_windows_path:
+            raise ValueError("Remote reference audio URLs are not allowed.")
+        if value.startswith(("//", "\\\\")):
+            raise ValueError("Network reference audio paths are not allowed.")
 
-        temporary = target.with_suffix(target.suffix + ".part")
-        total = 0
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = SERVICE_ROOT / candidate
         try:
-            with urlopen(value, timeout=30) as response, temporary.open("wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > 50 * 1024 * 1024:
-                        raise ValueError("Reference audio exceeds 50 MB")
-                    output.write(chunk)
-            temporary.replace(target)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return str(target.resolve())
+            target = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("Reference audio file does not exist.") from exc
+        if target.suffix.casefold() not in ALLOWED_REFERENCE_SUFFIXES:
+            raise ValueError("Unsupported reference audio format.")
+        if not any(target.is_relative_to(root) for root in _reference_audio_roots()):
+            raise ValueError("Reference audio path is outside the allowed directories.")
+        try:
+            if not target.is_file():
+                raise ValueError("Reference audio path is not a file.")
+            size = target.stat().st_size
+        except OSError as exc:
+            raise ValueError("Reference audio file cannot be inspected.") from exc
+        if size <= 0 or size > MAX_REFERENCE_AUDIO_BYTES:
+            raise ValueError("Reference audio must be between 1 byte and 20MB.")
+        return str(target)
 
     @staticmethod
     def _max_new_tokens(text):
@@ -77,6 +156,27 @@ class TTSService:
             "Qwen3-TTS 로딩중..."
         )
 
+        requested_dtype = os.getenv("MEMORYPAL_TTS_DTYPE", "auto").strip().lower()
+        dtype_names = {
+            "float32": torch.float32,
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+        }
+        if requested_dtype == "auto":
+            dtype = (
+                torch.bfloat16
+                if self.accelerator == "cuda"
+                else torch.float16
+                if self.accelerator == "rocm"
+                else torch.float32
+            )
+        elif requested_dtype in dtype_names:
+            dtype = dtype_names[requested_dtype]
+        else:
+            raise RuntimeError(
+                "MEMORYPAL_TTS_DTYPE must be auto, float32, float16, or bfloat16"
+            )
+
         if self.engine == "faster":
             from faster_qwen3_tts import FasterQwen3TTS
 
@@ -84,8 +184,8 @@ class TTSService:
                 FasterQwen3TTS
                 .from_pretrained(
                     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-                    device="cuda",
-                    dtype=torch.bfloat16,
+                    device=self.device,
+                    dtype=dtype,
                     attn_implementation="sdpa"
                 )
             )
@@ -100,8 +200,8 @@ class TTSService:
                 Qwen3TTSModel
                 .from_pretrained(
                     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-                    device_map="cuda",
-                    dtype=torch.bfloat16,
+                    device_map=self.device,
+                    dtype=dtype,
                     attn_implementation="sdpa"
                 )
             )
@@ -118,11 +218,10 @@ class TTSService:
         language="korean"
     ):
 
+        local_ref_audio = self._localize_ref_audio(ref_audio)
+
         with self._inference_lock:
             if self.engine == "faster":
-                local_ref_audio = self._localize_ref_audio(
-                    ref_audio
-                )
                 wavs, sr = (
                     self.model
                     .generate_voice_clone(
@@ -136,7 +235,7 @@ class TTSService:
                 )
             else:
                 prompt_key = (
-                    str(ref_audio),
+                    local_ref_audio,
                     str(ref_text)
                 )
                 voice_prompt = self._prompt_cache.get(
@@ -146,7 +245,7 @@ class TTSService:
                     voice_prompt = (
                         self.model
                         .create_voice_clone_prompt(
-                            ref_audio=ref_audio,
+                            ref_audio=local_ref_audio,
                             ref_text=ref_text,
                             x_vector_only_mode=False
                         )

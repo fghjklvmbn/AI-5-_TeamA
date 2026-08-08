@@ -24,12 +24,16 @@ backend.zip
 frontend/node_modules/
 frontend/.expo/
 frontend/dist/
+frontend/dist-main/
+frontend/dist-project3/
 frontend/.expo-test-dist/
 frontend/.expo-web.*.log
 frontend/.static-web.*.log
 frontend/.static-proxy.*.log
 admin/node_modules/
 admin/dist/
+admin/dist-main/
+admin/dist-project3/
 admin/*.tsbuildinfo
 npm-debug.log*
 .runtime/
@@ -37,4 +41,3 @@ npm-debug.log*
 # Editors and operating systems
 .DS_Store
 Thumbs.db
-

@@ -1,13 +1,15 @@
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE SCHEMA IF NOT EXISTS memorypal_archive;
+SET search_path TO memorypal_archive, public;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 
 --------------------------------------------------
 -- sessions
 --------------------------------------------------
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     user_id UUID,
 
@@ -24,10 +26,10 @@ CREATE TABLE sessions (
 -- voice_profiles
 --------------------------------------------------
 
-CREATE TABLE voice_profiles (
+CREATE TABLE IF NOT EXISTS voice_profiles (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     voice_name VARCHAR(255)
     NOT NULL,
@@ -64,10 +66,10 @@ CREATE TABLE voice_profiles (
 -- conversations
 --------------------------------------------------
 
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS conversations (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     session_id UUID
     NOT NULL,
@@ -104,10 +106,10 @@ CREATE TABLE conversations (
 -- memories
 --------------------------------------------------
 
-CREATE TABLE memories (
+CREATE TABLE IF NOT EXISTS memories (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     session_id UUID
     NOT NULL,

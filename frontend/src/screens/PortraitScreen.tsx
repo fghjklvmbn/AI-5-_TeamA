@@ -76,7 +76,7 @@ export function PortraitScreen({ token, persona }: Props) {
     setGenerating(true);
     setError('');
     try {
-      const next = await api.generatePortrait(token, persona);
+      const next = await api.generatePortrait(token, persona === 'none' ? 'default' : persona);
       setPortrait(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '자화상 분석을 시작하지 못했어요.');

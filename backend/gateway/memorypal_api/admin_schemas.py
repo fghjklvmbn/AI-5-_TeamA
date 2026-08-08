@@ -28,6 +28,14 @@ class AdminMetricRow(BaseModel):
     maximum_latency_ms: int = Field(ge=0)
 
 
+class AdminTrendPoint(BaseModel):
+    bucket: str
+    transaction_count: int = Field(ge=0)
+    succeeded_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    average_latency_ms: float = Field(ge=0)
+
+
 class AdminOverviewResponse(BaseModel):
     generated_at: str
     range_from: str
@@ -42,6 +50,7 @@ class AdminOverviewResponse(BaseModel):
     operations: dict[str, int]
     outbox: dict[str, int]
     routes: list[AdminMetricRow]
+    trend: list[AdminTrendPoint]
 
 
 class AdminTransactionItem(BaseModel):

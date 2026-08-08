@@ -109,24 +109,124 @@ services:
     volumes:
       - ./deploy/scale/postgres/migrations:/migrations:ro
       - ./backend/gateway/migrations:/gateway-runtime:ro
+      - ./backend/archive_service/sql_migrations:/archive-runtime:ro
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        for migration in /gateway-runtime/*.sql /migrations/*.sql; do
+        psql --no-psqlrc --set ON_ERROR_STOP=1 --command \
+          "ALTER TABLE memorypal_meta.schema_migrations ADD COLUMN IF NOT EXISTS checksum text"
+        archive_expected=1
+        archive_migrations="$$(find /archive-runtime -maxdepth 1 -type f -name '*.sql' | sort -V)"
+        if [ -z "$$archive_migrations" ]; then
+          echo "No Archive SQL migrations were found" >&2
+          exit 1
+        fi
+        for archive_migration in $$archive_migrations; do
+          archive_name="$$(basename "$$archive_migration")"
+          archive_prefix="$${archive_name%%_*}"
+          case "$$archive_prefix" in
+            ''|*[!0-9]*|0*) echo "Invalid Archive migration prefix: $$archive_name" >&2; exit 1 ;;
+          esac
+          if [ "$$archive_prefix" -ne "$$archive_expected" ]; then
+            echo "Archive migration prefixes must be consecutive: expected $$archive_expected, found $$archive_prefix" >&2
+            exit 1
+          fi
+          archive_expected=$$((archive_expected + 1))
+        done
+        migration_files="$$(find /gateway-runtime -maxdepth 1 -type f -name '*.sql' | sort)
+        $$archive_migrations
+        $$(find /migrations -maxdepth 1 -type f -name '*.sql' | sort)"
+        expected_versions=""
+        for migration in $$migration_files; do
           [ -f "$$migration" ] || continue
           case "$$migration" in
             /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            /archive-runtime/*) version="archive_$$(basename "$$migration")" ;;
             *) version="$$(basename "$$migration")" ;;
           esac
-          applied="$$(psql --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT 1 FROM memorypal_meta.schema_migrations WHERE version = '$$version'")"
-          if [ "$$applied" = "1" ]; then
+          case "$$version" in
+            *[!a-zA-Z0-9_.-]*) echo "Invalid migration filename: $$version" >&2; exit 1 ;;
+          esac
+          expected_versions="$$expected_versions $$version"
+        done
+        applied_versions="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT version FROM memorypal_meta.schema_migrations")"
+        for applied_version in $$applied_versions; do
+          case " $$expected_versions " in
+            *" $$applied_version "*) ;;
+            *) echo "Migration ledger contains deleted or unknown file: $$applied_version" >&2; exit 1 ;;
+          esac
+        done
+        # Preflight every source checksum before recording baselines or applying
+        # any pending DDL. This prevents a later mismatch from being discovered
+        # only after an earlier migration has already committed.
+        for migration in $$migration_files; do
+          [ -f "$$migration" ] || continue
+          case "$$migration" in
+            /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            /archive-runtime/*) version="archive_$$(basename "$$migration")" ;;
+            *) version="$$(basename "$$migration")" ;;
+          esac
+          checksum="$$(sha256sum "$$migration")"
+          checksum="$${checksum%% *}"
+          if [ "$${#checksum}" -ne 64 ]; then
+            echo "Unable to calculate SHA-256 for $$version" >&2
+            exit 1
+          fi
+          case "$$checksum" in
+            *[!0-9a-f]*) echo "Invalid SHA-256 for $$version" >&2; exit 1 ;;
+          esac
+          applied="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT COALESCE(checksum, '__legacy__') FROM memorypal_meta.schema_migrations WHERE version = '$$version'")"
+          if [ -n "$$applied" ] && [ "$$applied" != "__legacy__" ] && [ "$$applied" != "$$checksum" ]; then
+            echo "Migration checksum mismatch during preflight: $$version" >&2
+            exit 1
+          fi
+        done
+        for migration in $$migration_files; do
+          [ -f "$$migration" ] || continue
+          case "$$migration" in
+            /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            /archive-runtime/*) version="archive_$$(basename "$$migration")" ;;
+            *) version="$$(basename "$$migration")" ;;
+          esac
+          case "$$version" in
+            *[!a-zA-Z0-9_.-]*) echo "Invalid migration filename: $$version" >&2; exit 1 ;;
+          esac
+          checksum="$$(sha256sum "$$migration")"
+          checksum="$${checksum%% *}"
+          if [ "$${#checksum}" -ne 64 ]; then
+            echo "Unable to calculate SHA-256 for $$version" >&2
+            exit 1
+          fi
+          case "$$checksum" in
+            *[!0-9a-f]*) echo "Invalid SHA-256 for $$version" >&2; exit 1 ;;
+          esac
+          applied="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT COALESCE(checksum, '__legacy__') FROM memorypal_meta.schema_migrations WHERE version = '$$version'")"
+          if [ "$$applied" = "__legacy__" ]; then
+            echo "Recording baseline checksum for legacy migration: $$version"
+            psql --no-psqlrc --set ON_ERROR_STOP=1 --command \
+              "UPDATE memorypal_meta.schema_migrations SET checksum = '$$checksum' WHERE version = '$$version' AND checksum IS NULL"
+            continue
+          fi
+          if [ -n "$$applied" ] && [ "$$applied" != "$$checksum" ]; then
+            echo "Migration checksum mismatch: $$version" >&2
+            exit 1
+          fi
+          if [ "$$applied" = "$$checksum" ]; then
             echo "Skipping already applied migration: $$version"
             continue
           fi
           echo "Applying migration: $$version"
-          psql --set ON_ERROR_STOP=1 --file "$$migration"
-          psql --set ON_ERROR_STOP=1 --command "INSERT INTO memorypal_meta.schema_migrations (version) VALUES ('$$version') ON CONFLICT (version) DO NOTHING"
+          psql --no-psqlrc --set ON_ERROR_STOP=1 --single-transaction \
+            --file "$$migration" \
+            --command "INSERT INTO memorypal_meta.schema_migrations (version, checksum) VALUES ('$$version', '$$checksum')"
         done
+        missing_checksums="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT count(*) FROM memorypal_meta.schema_migrations WHERE checksum IS NULL")"
+        if [ "$$missing_checksums" != "0" ]; then
+          echo "Migration ledger still contains entries without checksums" >&2
+          exit 1
+        fi
+        psql --no-psqlrc --set ON_ERROR_STOP=1 --command \
+          "ALTER TABLE memorypal_meta.schema_migrations ALTER COLUMN checksum SET NOT NULL"
     networks:
       - memorypal_data
 

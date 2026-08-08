@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import secrets
@@ -8,9 +9,12 @@ import sqlite3
 import unicodedata
 import uuid
 from pathlib import Path
+from contextlib import suppress
+from typing import Awaitable, Callable
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
 from .dependencies import CurrentUser, get_current_user
 from .database import AccountAccessFenceError, DatabaseIntegrityError
@@ -51,6 +55,26 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 DISALLOWED_NAME_BIDI = {
     "LRE", "RLE", "LRO", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI",
 }
+
+
+def require_model_service_token(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> None:
+    """Authenticate the LAN-only readiness check with the shared model token."""
+    expected = request.app.state.settings.model_service_token
+    scheme, separator, supplied = (authorization or "").partition(" ")
+    if (
+        not separator
+        or scheme.casefold() != "bearer"
+        or not supplied
+        or not secrets.compare_digest(supplied, expected)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid model service credentials.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def require_write_fence(request: Request, user: CurrentUser) -> None:
@@ -308,6 +332,15 @@ def health(request: Request):
     }
 
 
+@router.get(
+    "/internal/ready",
+    dependencies=[Depends(require_model_service_token)],
+    include_in_schema=False,
+)
+def internal_ready():
+    return {"status": "ready"}
+
+
 @router.post("/auth/register", response_model=TokenResponse, status_code=201)
 def register(payload: RegisterRequest, request: Request):
     if not EMAIL_RE.match(payload.email):
@@ -532,8 +565,12 @@ def history(session_id: str, request: Request, user: CurrentUser = Depends(get_c
     ]
 
 
-@router.post("/chat/messages", response_model=ChatResponse)
-async def chat(payload: ChatRequest, request: Request, user: CurrentUser = Depends(get_current_user)):
+async def _create_chat_response(
+    payload: ChatRequest,
+    request: Request,
+    user: CurrentUser,
+    on_delta: Callable[[str], Awaitable[None]] | None = None,
+) -> ChatResponse:
     db = request.app.state.db
     engine = request.app.state.memory_engine
     pipeline = request.app.state.pipeline
@@ -548,15 +585,24 @@ async def chat(payload: ChatRequest, request: Request, user: CurrentUser = Depen
     session = session or db.create_session(
         user.id, expected_auth_version=user.auth_version,
     )
-    memories = engine.retrieve(user.id, payload.text)
     history_rows = db.get_history(user.id, session["id"], limit=10)
     session_context = db.get_session_working_memory(user.id, session["id"])
     if not session_context and history_rows:
         session_context = session_working_context(history_rows)
-    document_context = request.app.state.document_engine.retrieve_context(user.id, session["id"], payload.text)
-    web_context = ""
-    if payload.internet_enabled:
-        web_context = await request.app.state.web_search_engine.retrieve_context(payload.text, history_rows)
+    agent_context = await request.app.state.agent_loop.gather_context(
+        user_id=user.id,
+        session_id=session["id"],
+        user_text=payload.text,
+        history=history_rows,
+        persona=payload.persona,
+        internet_enabled=payload.internet_enabled,
+        memory_engine=engine,
+        document_engine=request.app.state.document_engine,
+        web_search_engine=request.app.state.web_search_engine,
+    )
+    memories = agent_context.memories
+    document_context = agent_context.document_context
+    web_context = agent_context.web_context
     try:
         answer = await pipeline.generate(
             payload.text, engine.as_prompt(memories), history_rows,
@@ -566,6 +612,7 @@ async def chat(payload: ChatRequest, request: Request, user: CurrentUser = Depen
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
             max_answer_chars=200 if payload.speak else None,
+            on_delta=on_delta,
         )
     except PipelineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -629,6 +676,67 @@ async def chat(payload: ChatRequest, request: Request, user: CurrentUser = Depen
         ),
         memories_used=[row["content"] for row in memories],
     )
+
+
+@router.post("/chat/messages", response_model=ChatResponse)
+async def chat(payload: ChatRequest, request: Request, user: CurrentUser = Depends(get_current_user)):
+    return await _create_chat_response(payload, request, user)
+
+
+@router.post("/chat/messages/stream")
+async def stream_chat(
+    payload: ChatRequest,
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+):
+    async def events():
+        queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=32)
+
+        async def on_delta(delta: str) -> None:
+            await queue.put({"type": "delta", "delta": delta})
+
+        async def run_chat() -> None:
+            try:
+                response = await _create_chat_response(payload, request, user, on_delta=on_delta)
+                await queue.put({
+                    "type": "complete",
+                    "response": response.model_dump(mode="json"),
+                })
+            except HTTPException as exc:
+                await queue.put({"type": "error", "status": exc.status_code, "detail": exc.detail})
+            except Exception:
+                logger.exception("Streaming chat failed")
+                await queue.put({
+                    "type": "error",
+                    "status": 500,
+                    "detail": "답변을 생성하는 중 문제가 발생했습니다.",
+                })
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(run_chat())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        finally:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    return StreamingResponse(
+        events(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/chat/messages/{message_id}/regenerate", response_model=ChatResponse)
 async def regenerate_message(
     message_id: str, payload: RegenerateRequest, request: Request,
@@ -646,17 +754,22 @@ async def regenerate_message(
     session = db.get_session(user.id, conversation["session_id"])
     if session is None:
         raise HTTPException(status_code=404, detail="대화 세션을 찾을 수 없습니다.")
-    memories = request.app.state.memory_engine.retrieve(user.id, conversation["user_text"])
     history_rows = db.get_history_before(user.id, session["id"], conversation["created_at"], limit=10)
     session_context = session_working_context(history_rows)
-    document_context = request.app.state.document_engine.retrieve_context(
-        user.id, session["id"], conversation["user_text"]
+    agent_context = await request.app.state.agent_loop.gather_context(
+        user_id=user.id,
+        session_id=session["id"],
+        user_text=conversation["user_text"],
+        history=history_rows,
+        persona=payload.persona,
+        internet_enabled=payload.internet_enabled,
+        memory_engine=request.app.state.memory_engine,
+        document_engine=request.app.state.document_engine,
+        web_search_engine=request.app.state.web_search_engine,
     )
-    web_context = ""
-    if payload.internet_enabled:
-        web_context = await request.app.state.web_search_engine.retrieve_context(
-            conversation["user_text"], history_rows
-        )
+    memories = agent_context.memories
+    document_context = agent_context.document_context
+    web_context = agent_context.web_context
     try:
         answer = await pipeline.generate(
             conversation["user_text"], request.app.state.memory_engine.as_prompt(memories), history_rows,

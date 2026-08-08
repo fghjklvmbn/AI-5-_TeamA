@@ -1,7 +1,3 @@
-\set ON_ERROR_STOP on
-
-BEGIN;
-
 -- The Gateway tables are the single runtime source of truth. memorypal_ops is
 -- a read-only namespace for the future administrator service, avoiding a
 -- second operation-state table that could drift from the live state machine.
@@ -62,5 +58,3 @@ COMMENT ON VIEW memorypal_ops.user_transaction_events IS
     'Metadata-only audit read model. Conversation, document, audio, and credential bodies are prohibited.';
 COMMENT ON VIEW memorypal_ops.operation_states IS
     'Live operation snapshots. Grant SELECT only to the future least-privilege admin role.';
-
-COMMIT;

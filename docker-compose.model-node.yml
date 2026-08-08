@@ -1,0 +1,71 @@
+name: memorypal-model-node
+
+services:
+  stt:
+    image: memorypal-stt:local
+    build:
+      context: .
+      dockerfile: deploy/docker/stt.Dockerfile
+      args:
+        MODEL_BASE_IMAGE: ${MEMORYPAL_MODEL_BASE_IMAGE:-python:3.12-slim-bookworm}
+        TORCH_INDEX_URL: ${MEMORYPAL_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    restart: unless-stopped
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set the shared model service token}
+      MEMORYPAL_STT_DEVICE: ${MEMORYPAL_STT_DEVICE:-auto}
+      MEMORYPAL_STT_MODEL: ${MEMORYPAL_STT_MODEL:-turbo}
+      MEMORYPAL_STT_MODEL_DIR: /models/whisper
+    volumes:
+      - memorypal_stt_models:/models/whisper
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 30m
+
+  tts:
+    image: memorypal-tts:local
+    build:
+      context: .
+      dockerfile: deploy/docker/tts.Dockerfile
+      args:
+        MODEL_BASE_IMAGE: ${MEMORYPAL_MODEL_BASE_IMAGE:-python:3.12-slim-bookworm}
+        TORCH_INDEX_URL: ${MEMORYPAL_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    restart: unless-stopped
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set the shared model service token}
+      MEMORYPAL_TTS_DEVICE: ${MEMORYPAL_TTS_DEVICE:-auto}
+      MEMORYPAL_TTS_ENGINE: ${MEMORYPAL_TTS_ENGINE:-auto}
+      MEMORYPAL_TTS_DTYPE: ${MEMORYPAL_TTS_DTYPE:-auto}
+      MEMORYPAL_TTS_PUBLIC_URL: ${MEMORYPAL_MODEL_PUBLIC_URL:-http://127.0.0.1:8090}/tts
+      MEMORYPAL_TTS_REFERENCE_UPLOAD_DIR: /tmp/memorypal-reference
+      MEMORYPAL_TTS_REFERENCE_AUDIO_ROOTS: /tmp/memorypal-reference:/app/backend/TTS_Server/reference_audio
+      HF_HOME: /models/huggingface
+    volumes:
+      - memorypal_tts_models:/models/huggingface
+      - memorypal_tts_outputs:/app/backend/TTS_Server/outputs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 30m
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - ${MEMORYPAL_MODEL_BIND_ADDRESS:-0.0.0.0}:${MEMORYPAL_MODEL_PROXY_PORT:-8090}:8090
+    volumes:
+      - ./deploy/docker/model-nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  memorypal_stt_models:
+  memorypal_tts_models:
+  memorypal_tts_outputs:

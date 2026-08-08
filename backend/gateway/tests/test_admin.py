@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -52,6 +53,24 @@ def test_admin_is_fail_closed_and_audited_without_polluting_product_events(tmp_p
         assert audit["admin_ref"]
 
 
+def test_anonymous_admin_4xx_does_not_grow_audit_table(tmp_path):
+    app = create_app(_settings(tmp_path))
+    with TestClient(app) as client:
+        before = app.state.db.fetch_one(
+            "SELECT COUNT(*) AS count FROM admin_audit_events"
+        )["count"]
+        for _ in range(3):
+            response = client.get("/v1/admin/me")
+            assert response.status_code == 401
+            assert response.headers["X-Request-ID"]
+            assert response.headers["X-Correlation-ID"]
+        after = app.state.db.fetch_one(
+            "SELECT COUNT(*) AS count FROM admin_audit_events"
+        )["count"]
+
+    assert after == before
+
+
 def test_allowlisted_admin_receives_only_privacy_safe_operational_data(tmp_path):
     app = create_app(_settings(tmp_path, admin_emails=("admin@example.com",)))
     with TestClient(app) as client:
@@ -65,9 +84,36 @@ def test_allowlisted_admin_receives_only_privacy_safe_operational_data(tmp_path)
         assert me.json()["authorization_source"] == "allowlist"
         assert me.json()["user_id"] != registered["user"]["id"]
 
+        app.state.db.record_transaction_event(
+            user_id=registered["user"]["id"],
+            operation_id=None,
+            request_id="nullable-latency-request",
+            correlation_id="nullable-latency-correlation",
+            event_type="nullable_latency_test",
+            status="succeeded",
+            http_method="GET",
+            http_path="/nullable-latency",
+            http_status=200,
+            latency_ms=None,
+        )
+
         overview = client.get("/v1/admin/overview", headers=headers)
         assert overview.status_code == 200
-        assert overview.json()["transaction_count"] >= 2
+        overview_payload = overview.json()
+        assert overview_payload["transaction_count"] >= 3
+        assert len(overview_payload["trend"]) == 12
+        assert sum(
+            point["transaction_count"] for point in overview_payload["trend"]
+        ) == overview_payload["transaction_count"]
+        assert sum(
+            row["transaction_count"] for row in overview_payload["routes"]
+        ) == overview_payload["transaction_count"]
+        nullable_route = next(
+            row for row in overview_payload["routes"]
+            if row["http_path"] == "/nullable-latency"
+        )
+        assert nullable_route["average_latency_ms"] == 0
+        assert nullable_route["maximum_latency_ms"] == 0
 
         transactions = client.get("/v1/admin/transactions?limit=1", headers=headers)
         assert transactions.status_code == 200
@@ -149,6 +195,42 @@ def test_admin_query_window_is_limited_to_31_days(tmp_path):
             headers=_headers(registered),
         )
         assert response.status_code == 422
+
+
+def test_admin_overview_does_not_truncate_route_groups(tmp_path):
+    app = create_app(_settings(tmp_path, admin_emails=("admin@example.com",)))
+    with TestClient(app) as client:
+        registered = _register(client, "admin@example.com")
+        occurred_at = datetime.now(UTC).isoformat()
+        with app.state.db.transaction() as db:
+            for index in range(250):
+                event_id = str(uuid.uuid4())
+                db.execute(
+                    "INSERT INTO user_transaction_events ("
+                    "event_id, user_id, operation_id, request_id, correlation_id, "
+                    "event_type, status, http_method, http_path, http_status, "
+                    "latency_ms, metadata_json, occurred_at"
+                    ") VALUES (?, ?, NULL, ?, ?, 'route_group_test', 'succeeded', "
+                    "'GET', ?, 200, ?, '{}', ?)",
+                    (
+                        event_id,
+                        registered["user"]["id"],
+                        f"route-request-{index:04d}",
+                        f"route-correlation-{index:04d}",
+                        f"/route-group/{index:04d}",
+                        index,
+                        occurred_at,
+                    ),
+                )
+
+        response = client.get("/v1/admin/overview", headers=_headers(registered))
+        assert response.status_code == 200
+        route_groups = [
+            row for row in response.json()["routes"]
+            if row["event_type"] == "route_group_test"
+        ]
+        assert len(route_groups) == 250
+        assert sum(row["transaction_count"] for row in route_groups) == 250
 
 
 def test_existing_sqlite_users_receive_admin_columns_and_opaque_reference(tmp_path):

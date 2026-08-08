@@ -17,6 +17,7 @@ CREATE SCHEMA IF NOT EXISTS memorypal_meta AUTHORIZATION CURRENT_USER;
 
 CREATE TABLE IF NOT EXISTS memorypal_meta.schema_migrations (
     version text PRIMARY KEY,
+    checksum text NOT NULL CHECK (checksum ~ '^[0-9a-f]{64}$'),
     applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 

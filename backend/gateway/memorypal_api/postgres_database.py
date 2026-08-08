@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -13,6 +14,64 @@ from .database import AccountAccessFenceError, Database, DatabaseIntegrityError,
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DOLLAR_QUOTE_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
+_REQUIRED_SCHEMA_RELATIONS = (
+    "users",
+    "chat_sessions",
+    "conversations",
+    "memories",
+    "operation_states",
+    "event_outbox",
+    "rag_embeddings",
+)
+
+
+def postgres_migration_manifest() -> dict[str, str]:
+    """Return the filename-based migration versions and content checksums."""
+    repository_root = Path(__file__).resolve().parents[3]
+    gateway_files = sorted(
+        (repository_root / "backend" / "gateway" / "migrations").glob("*.sql")
+    )
+    deploy_files = sorted(
+        (repository_root / "deploy" / "scale" / "postgres" / "migrations").glob("*.sql")
+    )
+    manifest: dict[str, str] = {}
+    for path in gateway_files:
+        manifest[f"gateway_{path.name}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    for path in deploy_files:
+        manifest[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if not manifest:
+        raise PostgresMigrationError("No PostgreSQL migrations were found")
+    return manifest
+
+
+def validate_postgres_migration_rows(
+    expected: dict[str, str], applied_rows: Iterable[dict[str, Any]],
+) -> None:
+    """Fail when a required migration is absent or its recorded content drifted."""
+    applied = {
+        str(row["version"]): str(row.get("checksum") or "")
+        for row in applied_rows
+    }
+    missing = sorted(set(expected) - set(applied))
+    unexpected = sorted(set(applied) - set(expected))
+    mismatched = sorted(
+        version
+        for version, checksum in expected.items()
+        if version in applied and applied[version] != checksum
+    )
+    if missing:
+        raise PostgresMigrationError(
+            "PostgreSQL migrations are pending: " + ", ".join(missing)
+        )
+    if unexpected:
+        raise PostgresMigrationError(
+            "PostgreSQL migration ledger contains deleted or unknown files: "
+            + ", ".join(unexpected)
+        )
+    if mismatched:
+        raise PostgresMigrationError(
+            "PostgreSQL migration checksum mismatch: " + ", ".join(mismatched)
+        )
 
 
 def split_postgres_statements(script: str) -> list[str]:
@@ -107,6 +166,10 @@ class PostgresDependencyError(RuntimeError):
     pass
 
 
+class PostgresMigrationError(RuntimeError):
+    pass
+
+
 class _PooledConnection:
     """Small DB-API proxy that returns psycopg connections to their pool."""
 
@@ -116,7 +179,14 @@ class _PooledConnection:
         self._closed = False
 
     def execute(self, query: str, params: Iterable[Any] = ()):
-        return self._connection.execute(self._owner._prepare(query), tuple(params))
+        prepared = self._owner._prepare(query)
+        bound_params = tuple(params)
+        if not bound_params:
+            # Passing an empty parameter sequence still enables psycopg's
+            # placeholder parser. SQL containing a literal LIKE wildcard such
+            # as `archive\_%` would then be rejected as an invalid `%` token.
+            return self._connection.execute(prepared)
+        return self._connection.execute(prepared, bound_params)
 
     def commit(self) -> None:
         self._connection.commit()
@@ -195,24 +265,53 @@ class PostgresDatabase(Database):
         return prepared
 
     def initialize(self) -> None:
-        with self._psycopg.connect(self.database_url, autocommit=True) as bootstrap:
-            bootstrap.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            bootstrap.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
-        if self._pool.closed:
-            self._pool.open(wait=True)
-        schema_path = Path(__file__).resolve().parents[1] / "migrations" / "postgres_schema.sql"
-        statements = split_postgres_statements(schema_path.read_text(encoding="utf-8"))
-        with self.transaction() as db:
-            # Gateway and background workers can start together. Serialize the
-            # idempotent bootstrap so concurrent CREATE INDEX statements do not
-            # race in PostgreSQL's system catalogs.
-            db.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended("
-                "'memorypal_gateway_schema_bootstrap', 0))"
-            )
-            for statement in statements:
-                if statement:
-                    db.execute(statement)
+        try:
+            expected_migrations = postgres_migration_manifest()
+            state_expressions = [
+                "to_regnamespace(?)::text AS schema_name",
+                "to_regtype('public.vector')::text AS vector_type",
+            ]
+            state_params: list[str] = [self.schema]
+            for index, relation in enumerate(_REQUIRED_SCHEMA_RELATIONS):
+                state_expressions.append(f"to_regclass(?)::text AS relation_{index}")
+                state_params.append(f"{self.schema}.{relation}")
+
+            with closing(self.connect()) as db:
+                try:
+                    state = db.execute(
+                        "SELECT " + ", ".join(state_expressions), state_params,
+                    ).fetchone()
+                    applied_rows = db.execute(
+                        "SELECT version, checksum "
+                        "FROM memorypal_meta.schema_migrations "
+                        "WHERE version NOT LIKE 'archive\\_%' ESCAPE '\\'",
+                    ).fetchall()
+                finally:
+                    db.rollback()
+
+            if not state or not state.get("schema_name"):
+                raise PostgresMigrationError(
+                    f'PostgreSQL schema "{self.schema}" has not been migrated'
+                )
+            if not state.get("vector_type"):
+                raise PostgresMigrationError("PostgreSQL extension public.vector is missing")
+            missing_relations = [
+                relation
+                for index, relation in enumerate(_REQUIRED_SCHEMA_RELATIONS)
+                if not state.get(f"relation_{index}")
+            ]
+            if missing_relations:
+                raise PostgresMigrationError(
+                    "PostgreSQL schema is incomplete; missing relations: "
+                    + ", ".join(missing_relations)
+                )
+            validate_postgres_migration_rows(expected_migrations, applied_rows)
+        except PostgresMigrationError:
+            raise
+        except Exception as exc:
+            raise PostgresMigrationError(
+                "PostgreSQL migration state could not be verified; run the scale migration job"
+            ) from exc
 
     def connect(self) -> _PooledConnection:
         if self._pool.closed:
@@ -222,7 +321,27 @@ class PostgresDatabase(Database):
     @contextmanager
     def transaction(self):
         with closing(self.connect()) as db:
-            db.execute("BEGIN")
+            # psycopg connections use autocommit=False and start a transaction
+            # automatically before the first statement. Sending an explicit
+            # BEGIN here would therefore produce PostgreSQL's recurring
+            # "there is already a transaction in progress" warning.
+            try:
+                yield db
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+    @contextmanager
+    def read_transaction(self):
+        # PostgreSQL READ COMMITTED takes a new snapshot for every statement.
+        # The admin overview is a multi-query read model, so pin one read-only
+        # snapshot until totals, routes, and trend buckets are all complete.
+        with closing(self.connect()) as db:
+            # SET TRANSACTION is the first statement, so psycopg implicitly
+            # opens the transaction and then applies these characteristics to
+            # it without a second BEGIN.
+            db.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             try:
                 yield db
                 db.commit()

@@ -287,6 +287,7 @@ function LoadingRows() {
 
 function TrendChart({ overview }: { overview: Overview }) {
   const points = overview.trend || [];
+  const hasTransactions = points.some((point) => Number(point.transaction_count || 0) > 0);
   const max = Math.max(1, ...points.map((point) => Number(point.transaction_count || 0)));
   return (
     <article className="panel trend-panel">
@@ -294,12 +295,16 @@ function TrendChart({ overview }: { overview: Overview }) {
         <div><p className="section-kicker">TRAFFIC</p><h3>트랜잭션 흐름</h3></div>
         <div className="legend"><span className="purple">전체 요청</span><span className="red">실패</span></div>
       </header>
-      {points.length ? (
+      {hasTransactions ? (
         <div className="bar-chart" role="img" aria-label="기간별 전체 요청과 실패 요청 막대 차트">
           <div className="chart-grid"><i /><i /><i /><i /></div>
           {points.slice(-16).map((point, index) => {
-            const totalHeight = Math.max(3, Number(point.transaction_count || 0) / max * 100);
-            const failedHeight = Number(point.failed_count || 0) / max * 100;
+            const total = Number(point.transaction_count || 0);
+            const failed = Math.min(total, Number(point.failed_count || 0));
+            const totalHeight = total > 0 ? Math.max(3, total / max * 100) : 0;
+            // The failure bar is nested inside the total bar, so its height is
+            // relative to that bucket rather than to the chart-wide maximum.
+            const failedHeight = total > 0 ? failed / total * 100 : 0;
             return (
               <div className="bar-column" key={`${point.bucket}-${index}`} title={`${formatDate(point.bucket)} · ${point.transaction_count}건`}>
                 <div className="bars"><span style={{ height: `${totalHeight}%` }}><i style={{ height: `${failedHeight}%` }} /></span></div>

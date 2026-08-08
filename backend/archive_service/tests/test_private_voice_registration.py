@@ -39,6 +39,7 @@ def archive_client(tmp_path, monkeypatch):
     legacy_dir.mkdir()
 
     monkeypatch.setenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN", SERVICE_TOKEN)
+    monkeypatch.delenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN_FILE", raising=False)
     monkeypatch.setattr(archive_app, "SessionLocal", session_factory)
     monkeypatch.setattr(archive_app, "PRIVATE_UPLOAD_DIR", private_dir)
     monkeypatch.setattr(archive_app, "LEGACY_UPLOAD_DIR", legacy_dir)
@@ -84,6 +85,49 @@ def _owner_headers(owner_ref: str = OWNER_REF):
     }
 
 
+def test_internal_ready_requires_the_current_archive_token(archive_client):
+    client, _session_factory, _private_dir = archive_client
+    assert client.get("/health").status_code == 200
+    assert client.get("/internal/ready").status_code == 401
+    assert client.get(
+        "/internal/ready",
+        headers={"Authorization": "Bearer stale-archive-token"},
+    ).status_code == 401
+    accepted = client.get(
+        "/internal/ready",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json() == {"status": "ok", "database": "ok"}
+
+
+def test_archive_token_file_is_supported_and_invalid_sources_fail_closed(
+    archive_client,
+    monkeypatch,
+    tmp_path,
+):
+    client, _session_factory, _private_dir = archive_client
+    token_file = tmp_path / "archive-service-token"
+    token_file.write_text(SERVICE_TOKEN + "\n", encoding="utf-8")
+    monkeypatch.delenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN")
+    monkeypatch.setenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN_FILE", str(token_file))
+
+    assert client.get(
+        "/internal/ready",
+        headers={"Authorization": f"Bearer {SERVICE_TOKEN}"},
+    ).status_code == 200
+
+    monkeypatch.setenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN", SERVICE_TOKEN)
+    assert client.get("/internal/ready", headers=_headers()).status_code == 503
+
+    monkeypatch.delenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN")
+    token_file.write_text("too-short\n", encoding="utf-8")
+    assert client.get("/internal/ready", headers=_headers()).status_code == 503
+
+    token_file.write_text("replace-with-a-random-archive-service-token\n", encoding="utf-8")
+    assert client.get("/internal/ready", headers=_headers()).status_code == 503
+
+
 def test_internal_voice_is_private_until_confirm_and_delete_is_owner_bound_idempotent(
     archive_client,
     monkeypatch,
@@ -119,6 +163,10 @@ def test_internal_voice_is_private_until_confirm_and_delete_is_owner_bound_idemp
     confirmed = client.post(f"/internal/voices/{voice_id}/confirm", headers=_headers())
     assert confirmed.status_code == 200
     assert confirmed.json()["registration_state"] == "active"
+    audio = client.get(f"/internal/voices/{voice_id}/audio", headers=_headers())
+    assert audio.status_code == 200
+    assert audio.content == b"RIFF-private-audio"
+    assert client.get(f"/internal/voices/{voice_id}/audio").status_code == 401
     assert [item["id"] for item in client.get(
         "/internal/voices", headers=_headers(),
     ).json()] == [voice_id]

@@ -1,0 +1,156 @@
+name: memorypal
+
+x-gateway-environment: &gateway-environment
+  MEMORYPAL_JWT_SECRET: ${MEMORYPAL_JWT_SECRET:?Set MEMORYPAL_JWT_SECRET in the Docker env file}
+  MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set MEMORYPAL_MODEL_SERVICE_TOKEN in the Docker env file}
+  MEMORYPAL_ARCHIVE_SERVICE_TOKEN: ${MEMORYPAL_ARCHIVE_SERVICE_TOKEN:?Set MEMORYPAL_ARCHIVE_SERVICE_TOKEN in the Docker env file}
+  MEMORYPAL_DATABASE_URL: postgresql://${MEMORYPAL_POSTGRES_USER:-memorypal_owner}:${MEMORYPAL_POSTGRES_PASSWORD}@postgres:5432/${MEMORYPAL_POSTGRES_DB:-memorypal}
+  MEMORYPAL_DATABASE_SCHEMA: memorypal_gateway
+  MEMORYPAL_DATABASE_POOL_MIN_SIZE: ${MEMORYPAL_DATABASE_POOL_MIN_SIZE:-2}
+  MEMORYPAL_DATABASE_POOL_MAX_SIZE: ${MEMORYPAL_DATABASE_POOL_MAX_SIZE:-20}
+  MEMORYPAL_REDIS_URL: redis://${MEMORYPAL_REDIS_USER:-memorypal}:${MEMORYPAL_REDIS_PASSWORD}@redis:6379/0
+  MEMORYPAL_REDIS_PREFIX: ${MEMORYPAL_REDIS_PREFIX:-memorypal}
+  MEMORYPAL_TASK_QUEUE_MODE: redis
+  MEMORYPAL_ADMIN_EMAILS: ${MEMORYPAL_ADMIN_EMAILS:-admin@memorypal.local}
+  MEMORYPAL_ROOT_PATH: ""
+  MEMORYPAL_CORS_ORIGINS: ${MEMORYPAL_CORS_ORIGINS:-http://localhost:8081,http://localhost:8082,http://127.0.0.1:8081,http://127.0.0.1:8082}
+  MEMORYPAL_STT_URL: ${MEMORYPAL_STT_URL:-http://host.docker.internal:8001}
+  MEMORYPAL_LLM_URL: ${MEMORYPAL_LLM_URL:-http://host.docker.internal:1234/v1}
+  MEMORYPAL_LLM_API_KEY: ${MEMORYPAL_LLM_API_KEY:-lm-studio}
+  MEMORYPAL_DEFAULT_LLM_MODEL: ${MEMORYPAL_DEFAULT_LLM_MODEL:-qwen/qwen3.5-9b}
+  MEMORYPAL_COMPANION_LLM_MODEL: ${MEMORYPAL_COMPANION_LLM_MODEL:-memorypal_ai}
+  MEMORYPAL_EMBEDDING_MODEL: ${MEMORYPAL_EMBEDDING_MODEL:-text-embedding-nomic-embed-text-v1.5}
+  MEMORYPAL_EMBEDDING_DIMENSIONS: ${MEMORYPAL_EMBEDDING_DIMENSIONS:-768}
+  MEMORYPAL_TTS_URL: ${MEMORYPAL_TTS_URL:-http://host.docker.internal:8003}
+  MEMORYPAL_TTS_PUBLIC_URL: ${MEMORYPAL_TTS_PUBLIC_URL:-http://127.0.0.1:8003}
+  MEMORYPAL_ARCHIVE_URL: http://archive:8004
+  MEMORYPAL_ARCHIVE_PUBLIC_URL: ${MEMORYPAL_ARCHIVE_PUBLIC_URL:-http://127.0.0.1:8004}
+  MEMORYPAL_REQUEST_TIMEOUT: ${MEMORYPAL_REQUEST_TIMEOUT:-300}
+
+x-gateway-service: &gateway-service
+  image: memorypal-gateway:local
+  build:
+    context: .
+    dockerfile: deploy/docker/gateway.Dockerfile
+  restart: unless-stopped
+  environment: *gateway-environment
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  networks:
+    - memorypal_data
+
+services:
+  archive:
+    image: memorypal-archive:local
+    build:
+      context: .
+      dockerfile: deploy/docker/archive.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_ARCHIVE_DATABASE_URL: postgresql://${MEMORYPAL_POSTGRES_USER:-memorypal_owner}:${MEMORYPAL_POSTGRES_PASSWORD}@postgres:5432/${MEMORYPAL_POSTGRES_DB:-memorypal}
+      MEMORYPAL_ARCHIVE_SERVICE_TOKEN: ${MEMORYPAL_ARCHIVE_SERVICE_TOKEN:?Set MEMORYPAL_ARCHIVE_SERVICE_TOKEN in the Docker env file}
+      MEMORYPAL_ARCHIVE_PRIVATE_UPLOAD_DIR: /data/private-voice-uploads
+      MEMORYPAL_ARCHIVE_PUBLIC_URL: ${MEMORYPAL_ARCHIVE_PUBLIC_URL:-http://127.0.0.1:8004}
+      MEMORYPAL_DEFAULT_VOICE_ID: ${MEMORYPAL_DEFAULT_VOICE_ID:-00000000-0000-0000-0000-000000000001}
+    ports:
+      - ${MEMORYPAL_PUBLIC_BIND_HOST:-127.0.0.1}:${MEMORYPAL_ARCHIVE_PORT:-8004}:8004
+    volumes:
+      - memorypal_archive_private_voice:/data/private-voice-uploads
+      - memorypal_archive_public_voice:/app/backend/archive_service/voice_uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - memorypal_data
+
+  gateway:
+    <<: *gateway-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      archive:
+        condition: service_healthy
+    ports:
+      - ${MEMORYPAL_PUBLIC_BIND_HOST:-127.0.0.1}:${MEMORYPAL_GATEWAY_PORT:-8000}:8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  worker:
+    image: memorypal-gateway:local
+    restart: unless-stopped
+    command: ["python", "-m", "memorypal_api.worker"]
+    environment: *gateway-environment
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      archive:
+        condition: service_healthy
+    networks:
+      - memorypal_data
+
+  frontend:
+    image: memorypal-frontend:local
+    build:
+      context: .
+      dockerfile: deploy/docker/frontend.Dockerfile
+      args:
+        MEMORYPAL_MAIN_PUBLIC_API_URL: ${MEMORYPAL_MAIN_PUBLIC_API_URL:-http://127.0.0.1:8000/v1}
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - ${MEMORYPAL_PUBLIC_BIND_HOST:-127.0.0.1}:${MEMORYPAL_FRONTEND_PORT:-8081}:8081
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/api_memoripal/main/', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - memorypal_data
+
+  admin:
+    image: memorypal-admin:local
+    build:
+      context: .
+      dockerfile: deploy/docker/admin.Dockerfile
+      args:
+        MEMORYPAL_MAIN_PUBLIC_API_URL: ${MEMORYPAL_MAIN_PUBLIC_API_URL:-http://127.0.0.1:8000/v1}
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - ${MEMORYPAL_PUBLIC_BIND_HOST:-127.0.0.1}:${MEMORYPAL_ADMIN_PORT:-8082}:8082
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8082/api_memoripal/manage/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      - memorypal_data
+
+volumes:
+  memorypal_archive_private_voice:
+  memorypal_archive_public_voice:
+
+networks:
+  memorypal_data:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-import secrets
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -19,8 +19,82 @@ ACTIVE_ENV = ROOT_ENV if ROOT_ENV.exists() else LEGACY_GATEWAY_ENV
 load_dotenv(ACTIVE_ENV, override=False)
 
 
+class SettingsError(RuntimeError):
+    """Raised when a required runtime setting is missing or unsafe."""
+
+
+_SECRET_PLACEHOLDER_MARKERS = (
+    "change-me",
+    "changeme",
+    "placeholder",
+    "replace-with",
+)
+
+
+def _secret_value(name: str, *, required: bool) -> str:
+    """Load NAME or NAME_FILE and reject ambiguous or weak configured values."""
+    direct_value = os.getenv(name, "").strip()
+    file_setting = os.getenv(f"{name}_FILE", "").strip()
+    if direct_value and file_setting:
+        raise SettingsError(f"Set only one of {name} or {name}_FILE")
+
+    value = direct_value
+    if file_setting:
+        secret_path = Path(file_setting).expanduser()
+        if not secret_path.is_absolute():
+            secret_path = (ACTIVE_ENV.parent / secret_path).resolve()
+        try:
+            value = secret_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise SettingsError(f"Unable to read {name}_FILE") from exc
+
+    normalized = value.casefold().replace("_", "-")
+    if not value and not required:
+        return ""
+    if not value:
+        raise SettingsError(f"{name} is required")
+    if len(value) < 32:
+        raise SettingsError(f"{name} must contain at least 32 characters")
+    if any(marker in normalized for marker in _SECRET_PLACEHOLDER_MARKERS):
+        raise SettingsError(f"{name} must not use a placeholder value")
+    return value
+
+
+def _required_secret(name: str) -> str:
+    return _secret_value(name, required=True)
+
+
+def _optional_secret(name: str) -> str:
+    return _secret_value(name, required=False)
+
+
 def _csv(name: str, default: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in os.getenv(name, default).split(",") if item.strip())
+
+
+def _cors_origins(name: str, default: str) -> tuple[str, ...]:
+    origins: list[str] = []
+    for raw_origin in _csv(name, default):
+        origin = raw_origin.rstrip("/")
+        parsed = urlsplit(origin)
+        if (
+            "*" in origin
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise SettingsError(
+                f"{name} must contain only exact HTTP(S) origins without paths or wildcards"
+            )
+        if origin not in origins:
+            origins.append(origin)
+    if not origins:
+        raise SettingsError(f"{name} must contain at least one exact origin")
+    return tuple(origins)
 
 
 def _path(name: str, default: str) -> Path:
@@ -40,6 +114,7 @@ class Settings:
     task_queue_mode: str
     admin_emails: tuple[str, ...]
     jwt_secret: str
+    model_service_token: str
     jwt_minutes: int
     cors_origins: tuple[str, ...]
     root_path: str
@@ -81,9 +156,10 @@ def load_settings() -> Settings:
         admin_emails=tuple(
             email.casefold() for email in _csv("MEMORYPAL_ADMIN_EMAILS", "")
         ),
-        jwt_secret=os.getenv("MEMORYPAL_JWT_SECRET") or secrets.token_urlsafe(48),
+        jwt_secret=_required_secret("MEMORYPAL_JWT_SECRET"),
+        model_service_token=_required_secret("MEMORYPAL_MODEL_SERVICE_TOKEN"),
         jwt_minutes=int(os.getenv("MEMORYPAL_JWT_MINUTES", "720")),
-        cors_origins=_csv(
+        cors_origins=_cors_origins(
             "MEMORYPAL_CORS_ORIGINS",
             "http://localhost:8081,http://localhost:8082,"
             "http://127.0.0.1:8081,http://127.0.0.1:8082,http://localhost:19006",
@@ -100,7 +176,7 @@ def load_settings() -> Settings:
         tts_url=os.getenv("MEMORYPAL_TTS_URL", "http://127.0.0.1:8003").rstrip("/"),
         tts_public_url=os.getenv("MEMORYPAL_TTS_PUBLIC_URL", "").rstrip("/"),
         archive_url=os.getenv("MEMORYPAL_ARCHIVE_URL", "http://127.0.0.1:8004").rstrip("/"),
-        archive_service_token=os.getenv("MEMORYPAL_ARCHIVE_SERVICE_TOKEN", "").strip(),
+        archive_service_token=_optional_secret("MEMORYPAL_ARCHIVE_SERVICE_TOKEN"),
         archive_registration_cleanup_delay_seconds=max(
             60,
             int(os.getenv("MEMORYPAL_ARCHIVE_REGISTRATION_CLEANUP_DELAY", "1200")),

@@ -158,3 +158,36 @@ def test_reused_client_request_id_does_not_merge_http_operations(tmp_path):
         assert {row["user_id"] for row in events} == {
             first.json()["user"]["id"], second.json()["user"]["id"],
         }
+
+
+def test_anonymous_4xx_requests_do_not_create_durable_telemetry(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "anonymous-4xx.db",
+        database_url="", root_path="",
+    )
+    app = create_app(settings)
+    tables = (
+        "operation_states",
+        "operation_state_transitions",
+        "user_transaction_events",
+        "event_outbox",
+    )
+
+    with TestClient(app) as client:
+        before = {
+            table: app.state.db.fetch_one(f"SELECT COUNT(*) AS count FROM {table}")["count"]
+            for table in tables
+        }
+        for _ in range(3):
+            response = client.get("/v1/auth/me")
+            assert response.status_code == 401
+            assert response.headers["X-Request-ID"]
+            assert response.headers["X-Correlation-ID"]
+        malformed = client.post("/v1/auth/register", json={})
+        assert malformed.status_code == 422
+        after = {
+            table: app.state.db.fetch_one(f"SELECT COUNT(*) AS count FROM {table}")["count"]
+            for table in tables
+        }
+
+    assert after == before

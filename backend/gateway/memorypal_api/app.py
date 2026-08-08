@@ -22,6 +22,7 @@ from .services.archive_cleanup import (
     archive_cleanup_loop,
     legacy_voice_reconciliation_loop,
 )
+from .services.agent_loop import AgentLoop
 from .services.memory_engine import MemoryEngine
 from .services.operation_state import OperationStateManager, install_operation_middleware
 from .services.pipeline import ModelPipeline
@@ -114,6 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.document_engine = DocumentEngine(db)
     app.state.web_search_engine = WebSearchEngine(resolved.web_search_max_results)
     app.state.pipeline = ModelPipeline(resolved)
+    app.state.agent_loop = AgentLoop(app.state.pipeline)
     app.state.task_queue = task_queue
     app.state.portrait_engine = PortraitEngine(db)
     app.state.portrait_tasks = {}
@@ -157,4 +159,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 app = create_app()
-

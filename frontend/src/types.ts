@@ -59,7 +59,7 @@ export type Attachment = {
   created_at: string;
 };
 
-export type Persona = 'default' | 'emotional_companion';
+export type Persona = 'default' | 'emotional_companion' | 'none';
 
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 
@@ -81,7 +81,36 @@ export type PortraitResponse = {
 };
 
 export type VoiceStatus = {
-  has_personalized_voice: boolean;
-  personalized_voice_count: number;
+  id: string;
+  voice_id: string;
+  status: 'uploaded' | 'registered' | 'provisional';
+  created_at: string;
 };
 
+// API 타입
+type ApiErrorDetail = {
+  detail?: string;
+  message?: string;
+  loc?: unknown[];
+  msg?: string;
+};
+
+export type ApiErrorMessage = string | (ApiErrorDetail & { loc?: unknown[] })[];
+
+// UI 컴포넌트 Props
+export type DropdownOption = { id: string; label: string; detail?: string };
+
+export interface DropdownFieldProps {
+  label: string;
+  value: string;
+  options: DropdownOption[];
+  onSelect: (id: string) => void;
+}
+
+// Hook 타입
+export type LiveRecorderResult = {
+  recording: boolean;
+  onRecordingStart: () => void;
+  onRecordingEnd: () => void;
+  onStop: () => void;
+};
