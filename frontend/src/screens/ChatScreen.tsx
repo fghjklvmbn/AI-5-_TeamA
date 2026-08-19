@@ -166,6 +166,7 @@ export function ChatScreen({
       : characterSpeaking
         ? 'speaking'
         : 'idle';
+  const characterCue = [...messages].reverse().find((message) => message.character_cue)?.character_cue;
 
   useEffect(() => {
     if (!autoPlayMessageId) return;
@@ -734,7 +735,7 @@ export function ChatScreen({
 
       <View style={[styles.conversationArea, conversationMode === 'hybrid' && styles.hybridArea]}>
       {conversationMode !== 'chat' && <Suspense fallback={<View style={styles.characterLoading}><ActivityIndicator color={colors.primary} /><Text style={styles.characterLoadingText}>캐릭터 영역을 준비하고 있어요…</Text></View>}>
-        <CharacterStage characterId={characterId} activity={characterActivity} onCharacterChange={onCharacterChange} />
+        <CharacterStage characterId={characterId} activity={characterActivity} cue={characterCue} onCharacterChange={onCharacterChange} />
       </Suspense>}
       {conversationMode !== 'live' && <ScrollView
         style={styles.messagePane}

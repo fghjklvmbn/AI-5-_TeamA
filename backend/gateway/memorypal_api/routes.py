@@ -46,6 +46,7 @@ from .schemas import (
 from .security import create_access_token, hash_password, verify_password
 from .services.document_engine import DocumentExtractionError
 from .services.archive_cleanup import run_immediate_archive_cleanup
+from .services.character_cue import character_cue_for
 from .services.memory_engine import MemoryCandidate
 from .services.pipeline import PipelineUnavailable
 from .services.model_manager import ModelManagerConflict, ModelManagerError
@@ -593,6 +594,7 @@ def history(session_id: str, request: Request, user: CurrentUser = Depends(get_c
             assistant_text=row["assistant_text"],
             audio_url=pipeline.public_audio_url(row["output_audio_path"]),
             created_at=row["created_at"],
+            character_cue=character_cue_for(row["assistant_text"]),
         )
         for row in request.app.state.db.get_history(user.id, session_id)
     ]
@@ -745,6 +747,7 @@ async def _create_chat_response(
             assistant_text=conversation["assistant_text"],
             audio_url=conversation["output_audio_path"],
             created_at=conversation["created_at"],
+            character_cue=character_cue_for(conversation["assistant_text"]),
         ),
         memories_used=[row["content"] for row in memories],
     )
@@ -890,6 +893,7 @@ async def regenerate_message(
         message=MessageResponse(
             id=updated["id"], user_text=updated["user_text"], assistant_text=updated["assistant_text"],
             audio_url=updated["output_audio_path"], created_at=updated["created_at"],
+            character_cue=character_cue_for(updated["assistant_text"]),
         ),
         memories_used=[row["content"] for row in memories],
     )
@@ -924,6 +928,7 @@ async def synthesize_message_audio(
                 assistant_text=conversation["assistant_text"],
                 audio_url=pipeline.public_audio_url(conversation["output_audio_path"]),
                 created_at=conversation["created_at"],
+                character_cue=character_cue_for(conversation["assistant_text"]),
             )
         assistant_text = str(conversation["assistant_text"] or "").strip()
         if not assistant_text:
@@ -946,6 +951,7 @@ async def synthesize_message_audio(
             assistant_text=updated["assistant_text"],
             audio_url=pipeline.public_audio_url(updated["output_audio_path"]),
             created_at=updated["created_at"],
+            character_cue=character_cue_for(updated["assistant_text"]),
         )
 
 

@@ -24,6 +24,7 @@ export type Message = {
   assistant_text: string;
   audio_url?: string | null;
   created_at: string;
+  character_cue?: CharacterCue | null;
 };
 
 export type ChatResponse = {
@@ -66,6 +67,13 @@ export type ConversationMode = 'live' | 'chat' | 'hybrid';
 export type CharacterId = 'haru' | 'nari';
 
 export type CharacterActivity = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+export type CharacterCue = {
+  emotion: 'neutral' | 'happy' | 'sad' | 'concerned' | 'excited';
+  intensity: number;
+  gesture: 'idle' | 'nod' | 'comfort' | 'celebrate';
+  voice_style: 'calm' | 'warm' | 'bright';
+};
 
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 

@@ -122,12 +122,20 @@ class MessageAudioRequest(BaseModel):
     voice_id: str | None = Field(default=None, max_length=128)
 
 
+class CharacterCue(BaseModel):
+    emotion: Literal["neutral", "happy", "sad", "concerned", "excited"]
+    intensity: float = Field(ge=0, le=1)
+    gesture: Literal["idle", "nod", "comfort", "celebrate"]
+    voice_style: Literal["calm", "warm", "bright"]
+
+
 class MessageResponse(BaseModel):
     id: str
     user_text: str
     assistant_text: str
     audio_url: str | None = None
     created_at: str
+    character_cue: CharacterCue | None = None
 
 
 class ChatResponse(BaseModel):
