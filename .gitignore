@@ -19,6 +19,9 @@ backend/TTS_Server/reference_cache/
 backend/archive_service/voice_uploads/
 backend/archive_service/private_voice_uploads/
 backend.zip
+data/
+dist/*
+!dist/MemoryPal-LLM-Monitor.zip
 
 # Expo / Node
 frontend/node_modules/

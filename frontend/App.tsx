@@ -16,7 +16,7 @@ import { PortraitScreen } from './src/screens/PortraitScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { ThemeProvider, useTheme } from './src/theme';
 import { api } from './src/api';
-import type { ChatResponse, Message, ModelReasoningCapabilities, Persona, ReasoningEffort } from './src/types';
+import type { CharacterId, ChatResponse, ConversationMode, Message, ModelReasoningCapabilities, Persona, ReasoningEffort } from './src/types';
 
 function persistPreference(task: Promise<void>): void {
   void task.catch(() => undefined);
@@ -35,6 +35,9 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium');
   const [modelCapabilities, setModelCapabilities] = useState<ModelReasoningCapabilities>();
   const [modelCapabilitiesLoading, setModelCapabilitiesLoading] = useState(false);
+  const [selectedModelKey, setSelectedModelKey] = useState<string>();
+  const [conversationMode, setConversationMode] = useState<ConversationMode>('chat');
+  const [characterId, setCharacterId] = useState<CharacterId>('haru');
   const [voiceProcessing, setVoiceProcessing] = useState<{ active: boolean; transcript: string }>({ active: false, transcript: '' });
   const [incomingMessage, setIncomingMessage] = useState<Message>();
   const [accountOpen, setAccountOpen] = useState(false);
@@ -71,6 +74,9 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       setInternetEnabled(false);
       setThinkingMode(false);
       setReasoningEffort('medium');
+      setSelectedModelKey(undefined);
+      setConversationMode('chat');
+      setCharacterId('haru');
       return;
     }
     let active = true;
@@ -102,6 +108,15 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
         setReasoningEffort(stored);
       }
     }).catch(() => undefined);
+    void AsyncStorage.getItem(`memorypal.selectedModel.${user.id}`).then((stored) => {
+      if (active) setSelectedModelKey(stored || undefined);
+    }).catch(() => undefined);
+    void AsyncStorage.getItem(`memorypal.conversationMode.${user.id}`).then((stored) => {
+      if (active && (stored === 'live' || stored === 'chat' || stored === 'hybrid')) setConversationMode(stored);
+    }).catch(() => undefined);
+    void AsyncStorage.getItem(`memorypal.characterId.${user.id}`).then((stored) => {
+      if (active && (stored === 'haru' || stored === 'nari')) setCharacterId(stored);
+    }).catch(() => undefined);
     return () => { active = false; };
   }, [user?.id]);
 
@@ -114,7 +129,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
     const controller = new AbortController();
     setModelCapabilities(undefined);
     setModelCapabilitiesLoading(true);
-    void api.modelCapabilities(token, persona, controller.signal).then((capabilities) => {
+    void api.modelCapabilities(token, persona, controller.signal, selectedModelKey).then((capabilities) => {
       if (controller.signal.aborted) return;
       setModelCapabilities(capabilities);
       if (!capabilities.thinking_supported) {
@@ -138,7 +153,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       if (!controller.signal.aborted) setModelCapabilitiesLoading(false);
     });
     return () => controller.abort();
-  }, [persona, token, user?.id]);
+  }, [persona, selectedModelKey, token, user?.id]);
 
   if (loading) {
     return <View style={styles.loading}><ActivityIndicator color={colors.primary} size="large" /></View>;
@@ -175,9 +190,25 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
     persistPreference(AsyncStorage.setItem(`memorypal.reasoningEffort.${user.id}`, effort));
   };
 
+  const updateSelectedModel = (modelKey: string | undefined) => {
+    setSelectedModelKey(modelKey);
+    const key = `memorypal.selectedModel.${user.id}`;
+    persistPreference(modelKey ? AsyncStorage.setItem(key, modelKey) : AsyncStorage.removeItem(key));
+  };
+
   const updateDarkMode = (enabled: boolean) => {
     onDarkModeChange(enabled);
     persistPreference(AsyncStorage.setItem('memorypal.darkMode', String(enabled)));
+  };
+
+  const updateConversationMode = (mode: ConversationMode) => {
+    setConversationMode(mode);
+    persistPreference(AsyncStorage.setItem(`memorypal.conversationMode.${user.id}`, mode));
+  };
+
+  const updateCharacter = (id: CharacterId) => {
+    setCharacterId(id);
+    persistPreference(AsyncStorage.setItem(`memorypal.characterId.${user.id}`, id));
   };
 
   const activeThinkingMode = thinkingMode && modelCapabilities?.thinking_supported === true;
@@ -189,12 +220,12 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar style={darkMode ? 'light' : 'dark'} />
-      <View style={styles.phone}>
+      <View style={[styles.phone, tab === 'chat' && conversationMode === 'hybrid' && styles.hybridPhone]}>
         {accountOpen ? (
           <AccountScreen user={user} onClose={() => setAccountOpen(false)} />
         ) : (<>
         <View style={styles.screen}>
-          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceId={voiceId} voiceReplyEnabled={voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={activeThinkingMode} reasoningEffort={activeReasoningEffort} onPersonaChange={updatePersona} onVoiceIdChange={setVoiceId} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} onOpenAccount={() => setAccountOpen(true)} onLogout={logout} />}
+          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceId={voiceId} voiceReplyEnabled={conversationMode === 'live' || voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={activeThinkingMode} reasoningEffort={activeReasoningEffort} modelKey={persona === 'none' ? selectedModelKey : undefined} onModelKeyChange={updateSelectedModel} onPersonaChange={updatePersona} onVoiceIdChange={setVoiceId} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} onOpenAccount={() => setAccountOpen(true)} onLogout={logout} />}
           <View
             pointerEvents={tab === 'chat' ? 'auto' : 'none'}
             style={[styles.chatScreen, tab !== 'chat' && styles.hiddenScreen]}
@@ -210,6 +241,11 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
               internetEnabled={internetEnabled}
               thinkingMode={activeThinkingMode}
               reasoningEffort={activeReasoningEffort}
+              modelKey={persona === 'none' ? selectedModelKey : undefined}
+              conversationMode={conversationMode}
+              characterId={characterId}
+              onConversationModeChange={updateConversationMode}
+              onCharacterChange={updateCharacter}
               incomingMessage={incomingMessage}
               onIncomingMessageConsumed={consumeIncomingMessage}
               onSessionChange={updateConversation}
@@ -223,7 +259,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
           >
             <PortraitScreen token={token} persona={persona} />
           </View>
-          {tab === 'settings' && <SettingsScreen token={token} user={user} casualMode={casualMode} persona={persona} darkMode={darkMode} voiceReplyEnabled={voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={thinkingMode} reasoningEffort={reasoningEffort} modelCapabilities={modelCapabilities} modelCapabilitiesLoading={modelCapabilitiesLoading} onCasualModeChange={updateCasualMode} onPersonaChange={updatePersona} onDarkModeChange={updateDarkMode} onVoiceReplyChange={updateVoiceReply} onInternetEnabledChange={updateInternetEnabled} onThinkingModeChange={updateThinkingMode} onReasoningEffortChange={updateReasoningEffort} onOpenAccount={() => setAccountOpen(true)} logout={logout} />}
+          {tab === 'settings' && <SettingsScreen token={token} user={user} casualMode={casualMode} persona={persona} darkMode={darkMode} voiceReplyEnabled={voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={thinkingMode} reasoningEffort={reasoningEffort} modelCapabilities={modelCapabilities} modelCapabilitiesLoading={modelCapabilitiesLoading} selectedModelKey={selectedModelKey} conversationMode={conversationMode} onCasualModeChange={updateCasualMode} onPersonaChange={updatePersona} onDarkModeChange={updateDarkMode} onVoiceReplyChange={updateVoiceReply} onInternetEnabledChange={updateInternetEnabled} onThinkingModeChange={updateThinkingMode} onReasoningEffortChange={updateReasoningEffort} onSelectedModelKeyChange={updateSelectedModel} onConversationModeChange={updateConversationMode} onOpenAccount={() => setAccountOpen(true)} logout={logout} />}
         </View>
         <BottomTabs current={tab} onChange={setTab} />
         </>)}
@@ -268,6 +304,7 @@ export default function App() {
 const createStyles = (colors: import('./src/theme').ThemeColors) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.background, alignItems: 'center' },
   phone: { flex: 1, width: '100%', maxWidth: 560, backgroundColor: colors.background },
+  hybridPhone: { maxWidth: 1040 },
   screen: { flex: 1 },
   chatScreen: { flex: 1 },
   portraitScreen: { flex: 1 },

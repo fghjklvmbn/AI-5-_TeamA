@@ -107,6 +107,15 @@ def overview(
     }
 
 
+@router.get("/services")
+async def service_hardware_status(
+    request: Request,
+    history_limit: int = Query(default=100, ge=0, le=500),
+    _admin: CurrentAdmin = Depends(get_current_admin),
+):
+    return await request.app.state.hardware_monitor.snapshot(history_limit)
+
+
 @router.get("/transactions", response_model=AdminTransactionListResponse)
 def transactions(
     request: Request,

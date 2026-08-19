@@ -159,6 +159,10 @@ try {
     Stop-MemoryPalProcess "portrait-worker" "portrait_worker.py"
     Stop-MemoryPalProcess "admin" "admin\server.mjs"
     Stop-MemoryPalProcess "frontend" "static_server.py"
+    Stop-MemoryPalProcess "monitor-gateway" "monitor_agent\server.py"
+    Stop-MemoryPalProcess "monitor-archive" "monitor_agent\server.py"
+    Stop-MemoryPalProcess "monitor-tts" "monitor_agent\server.py"
+    Stop-MemoryPalProcess "monitor-stt" "monitor_agent\server.py"
     Stop-MemoryPalProcess "gateway" "gateway_server.py"
     Stop-MemoryPalProcess "archive" "--port 8004" "\archive\python.exe"
     if ($Project3UsesSharedModels) {

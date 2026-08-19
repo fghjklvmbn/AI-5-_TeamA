@@ -645,6 +645,36 @@ try {
         -HealthUri "http://127.0.0.1:8010/v1/health" `
         -AuthenticatedReadyUri "http://127.0.0.1:8010/v1/internal/ready"
 
+    $MonitorServer = Join-Path $Root "backend\monitor_agent\server.py"
+    $MonitorDefinitions = @(
+        @{ Name = "stt"; Port = "8100"; TargetPid = [IO.File]::ReadAllText((Join-Path $Runtime "stt.pid")).Trim(); Health = "http://127.0.0.1:8001/health" },
+        @{ Name = "tts"; Port = "8102"; TargetPid = [IO.File]::ReadAllText((Join-Path $Runtime "tts.pid")).Trim(); Health = "http://127.0.0.1:8003/health" },
+        @{ Name = "gateway"; Port = "8103"; TargetPid = [IO.File]::ReadAllText((Join-Path $Runtime "gateway.pid")).Trim(); Health = "http://127.0.0.1:8010/v1/health" },
+        @{ Name = "archive"; Port = "8104"; TargetPid = [IO.File]::ReadAllText((Join-Path $Runtime "archive.pid")).Trim(); Health = "http://127.0.0.1:8004/health" }
+    )
+    foreach ($Monitor in $MonitorDefinitions) {
+        Start-MemoryPalProcess `
+            -Name "monitor-$($Monitor.Name)" `
+            -FilePath $VenvPython `
+            -ArgumentList @(
+                $MonitorServer,
+                "--service", $Monitor.Name,
+                "--host", "0.0.0.0",
+                "--port", $Monitor.Port,
+                "--target-pid", $Monitor.TargetPid,
+                "--health-url", $Monitor.Health,
+                "--log-path", (Join-Path $Logs "$($Monitor.Name).hardware.jsonl")
+            ) `
+            -WorkingDirectory (Join-Path $Root "backend\monitor_agent") `
+            -PidFile (Join-Path $Runtime "monitor-$($Monitor.Name).pid") `
+            -HealthUri "http://127.0.0.1:$($Monitor.Port)/health" `
+            -AllowedMemoryPalVariables @(
+                "MEMORYPAL_MODEL_SERVICE_TOKEN",
+                "MEMORYPAL_MODEL_SERVICE_TOKEN_FILE",
+                "MEMORYPAL_MONITOR_INTERVAL_SECONDS"
+            )
+    }
+
     $TaskQueueMode = [Environment]::GetEnvironmentVariable(
         "MEMORYPAL_TASK_QUEUE_MODE", "Process"
     )
@@ -706,6 +736,7 @@ try {
     Write-Host "STT      : http://127.0.0.1:8001/health"
     Write-Host "TTS      : http://127.0.0.1:8003/docs"
     Write-Host "Archive  : http://127.0.0.1:8004/health"
+    Write-Host "Monitors : STT 8100 / LLM 8101(remote) / TTS 8102 / Gateway 8103 / Archive 8104"
     Write-Host "API Docs : http://127.0.0.1:8010/docs"
     Write-Host "Logs     : $Logs"
     Write-Host "External : https://developark.duckdns.org/api_memoripal/manage/"

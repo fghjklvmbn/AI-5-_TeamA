@@ -109,6 +109,57 @@ def test_completion_disables_reasoning_without_mutating_stored_messages(monkeypa
     assert original[-1]["content"] == "오늘 지쳤어"
 
 
+def test_completion_can_defer_output_limit_to_lmstudio(monkeypatch):
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    class Response:
+        def raise_for_status(self): return None
+        def json(self):
+            return {"choices": [{"message": {"content": "상세한 답변입니다."}, "finish_reason": "stop"}]}
+
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return None
+        async def post(self, _url, headers, json):
+            captured.update(json)
+            return Response()
+
+    monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: Client())
+    answer = asyncio.run(pipeline._completion(
+        [{"role": "user", "content": "자세히 설명해 줘"}],
+        0.7,
+        "qwen3.5-4b",
+        omit_max_tokens=True,
+    ))
+    assert answer == "상세한 답변입니다."
+    assert "max_tokens" not in captured
+
+
+def test_none_persona_without_character_limit_uses_model_output_limit():
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    async def completion(messages, temperature, model=None, **kwargs):
+        captured["messages"] = messages
+        captured["omit_max_tokens"] = kwargs.get("omit_max_tokens")
+        return "핵심 개념과 예시를 포함한 충분한 답변입니다."
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "인공지능을 자세히 설명해 줘",
+        "",
+        [],
+        persona="none",
+        max_answer_chars=None,
+    ))
+    assert answer == "핵심 개념과 예시를 포함한 충분한 답변입니다."
+    assert captured["omit_max_tokens"] is True
+    system_prompt = captured["messages"][0]["content"]
+    assert "충분히 상세하게" in system_prompt
+    assert "필요한 만큼만 간결하게" not in system_prompt
+
+
 def test_completion_streams_visible_content_deltas(monkeypatch):
     pipeline = ModelPipeline(load_settings())
     captured = {}

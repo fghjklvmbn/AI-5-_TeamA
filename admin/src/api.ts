@@ -6,6 +6,7 @@ import type {
   Overview,
   TransactionEvent,
   UserMetric,
+  HardwareMonitorResponse,
 } from './types';
 
 const explicitApiUrl = import.meta.env.VITE_API_URL as string | undefined;
@@ -171,6 +172,11 @@ export const adminApi = {
       `/admin/overview${query({ from, to })}`, {}, token, signal,
     );
     return normalizeOverview(overview);
+  },
+  services(token: string, historyLimit = 100, signal?: AbortSignal) {
+    return request<HardwareMonitorResponse>(
+      `/admin/services${query({ history_limit: historyLimit })}`, {}, token, signal,
+    );
   },
   async transactions(
     token: string,

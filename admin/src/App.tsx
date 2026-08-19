@@ -23,6 +23,7 @@ import {
   Network,
   RefreshCcw,
   Search,
+  ServerCog,
   ShieldCheck,
   Sun,
   Trash2,
@@ -43,9 +44,11 @@ import type {
   Overview,
   TransactionEvent,
   UserMetric,
+  HardwareMetric,
+  HardwareMonitorResponse,
 } from './types';
 
-type Page = 'overview' | 'transactions' | 'operations' | 'users';
+type Page = 'overview' | 'services' | 'transactions' | 'operations' | 'users';
 type RangeKey = '1h' | '24h' | '7d' | '30d';
 
 const EMPTY_OVERVIEW: Overview = {
@@ -62,6 +65,7 @@ const EMPTY_OVERVIEW: Overview = {
 
 const PAGE_META: Record<Page, { label: string; eyebrow: string; title: string; icon: LucideIcon }> = {
   overview: { label: '운영 개요', eyebrow: 'OPERATIONS OVERVIEW', title: 'MemoryPal의 흐름을 한눈에', icon: LayoutDashboard },
+  services: { label: '서비스 자원', eyebrow: 'SERVICE HEALTH', title: '서비스별 서버 자원 상태', icon: ServerCog },
   transactions: { label: '트랜잭션', eyebrow: 'TRANSACTION EXPLORER', title: '사용자 요청 흐름', icon: Activity },
   operations: { label: '작업 상태', eyebrow: 'STATE MANAGEMENT', title: '진행 중인 작업과 상태 전이', icon: CircleGauge },
   users: { label: '사용자 분석', eyebrow: 'USER ACTIVITY', title: '사용자별 이용 지표', icon: Users },
@@ -92,6 +96,7 @@ const ACCOUNT_STATUS_LABELS: Record<UserMetric['account_status'], string> = {
 type UserControlAction = 'suspend' | 'unsuspend' | 'deactivate';
 
 function normalizeStatus(page: Page, status: string): string | undefined {
+  if (page === 'services') return undefined;
   if (!status) return undefined;
   const valid = page === 'users' ? ACCOUNT_STATUS_LABELS : STATUS_LABELS;
   return Object.prototype.hasOwnProperty.call(valid, status) ? status : undefined;
@@ -114,6 +119,14 @@ function formatLatency(value: number | null | undefined) {
   const latency = Number(value || 0);
   if (latency >= 1000) return `${(latency / 1000).toFixed(2)}초`;
   return `${Math.round(latency)}ms`;
+}
+
+function formatBytes(value: number | null | undefined) {
+  const bytes = Number(value || 0);
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
 }
 
 function formatDate(value: string | null | undefined, withDate = true) {
@@ -245,7 +258,7 @@ function Sidebar({ page, onPage, user, onLogout, open, onClose, health }: {
         </nav>
         <div className="sidebar-status">
           <div className={`live-dot ${health}`}><i /> {health === 'syncing' ? '메타데이터 동기화 중' : health === 'delayed' ? '연결 상태 확인 필요' : '운영 메타데이터 최신'}</div>
-          <p>{health === 'delayed' ? '마지막 요청에 실패했습니다. 상단에서 다시 시도해 주세요.' : '본문 없이 30초 간격으로 상태를 갱신합니다.'}</p>
+          <p>{health === 'delayed' ? '마지막 요청에 실패했습니다. 상단에서 다시 시도해 주세요.' : '본문 없이 15초 간격으로 상태를 갱신합니다.'}</p>
         </div>
         <div className="admin-profile">
           <div className="avatar">{(user.display_name || user.email || 'A').slice(0, 1).toUpperCase()}</div>
@@ -638,6 +651,46 @@ function UsersPage({ result, loading, token, search, pageNumber, canGoPrevious, 
   );
 }
 
+const SERVICE_LABELS: Record<HardwareMetric['service'], string> = {
+  stt: 'STT', llm: 'LLM', tts: 'TTS', gateway: 'Gateway', archive: 'Archive',
+};
+
+const EMPTY_HARDWARE: HardwareMonitorResponse = {
+  generated_at: '', interval_seconds: 15, services: [], history: [],
+};
+
+function ServicesPage({ data, loading }: { data: HardwareMonitorResponse; loading: boolean }) {
+  if (loading && !data.services.length) return <LoadingRows />;
+  return <div className="services-page">
+    <div className="service-grid">
+      {data.services.map((metric) => <article className={`service-card service-${metric.status}`} key={metric.service}>
+        <header><div><span className="service-light" /><strong>{SERVICE_LABELS[metric.service]}</strong></div><span>{metric.status.toUpperCase()}</span></header>
+        <p>{metric.reason}</p>
+        <dl>
+          <div><dt>프로세스 CPU</dt><dd>{formatPercent(metric.cpu.process_percent)}</dd></div>
+          <div><dt>서버 RAM</dt><dd>{formatPercent(metric.ram.used_percent)}</dd></div>
+          <div><dt>프로세스 RAM</dt><dd>{formatBytes(metric.ram.process_rss_bytes)}</dd></div>
+          <div><dt>서버 여유 RAM</dt><dd>{formatBytes(metric.ram.available_bytes)}</dd></div>
+          <div><dt>응답 시간</dt><dd>{metric.response_latency_ms == null ? '—' : formatLatency(metric.response_latency_ms)}</dd></div>
+          <div><dt>수집 시각</dt><dd>{formatDate(metric.sampled_at, false)}</dd></div>
+        </dl>
+        {metric.gpu && <div className="gpu-metrics">
+          <strong>{metric.gpu.names.join(', ')}</strong>
+          <span>CUDA {formatPercent(metric.gpu.cuda_utilization_percent)}</span>
+          <span>VRAM {formatBytes(metric.gpu.vram_used_bytes)} / {formatBytes(metric.gpu.vram_total_bytes)}</span>
+          <span>남음 {formatBytes(metric.gpu.vram_free_bytes)}</span>
+        </div>}
+      </article>)}
+    </div>
+    <section className="panel service-history">
+      <div className="panel-heading"><div><p className="section-kicker">15 SECOND SNAPSHOTS</p><h3>최근 상태 기록</h3></div><span className="record-count">{data.history.length}개</span></div>
+      <div className="table-scroll"><table><thead><tr><th>시각</th><th>서비스</th><th>상태</th><th>CPU</th><th>RAM</th><th>응답</th></tr></thead><tbody>
+        {[...data.history].reverse().map((metric, index) => <tr key={`${metric.service}-${metric.sampled_at}-${index}`}><td className="nowrap">{formatDate(metric.sampled_at)}</td><td>{SERVICE_LABELS[metric.service]}</td><td><span className={`hardware-status ${metric.status}`}><i />{metric.status}</span></td><td>{formatPercent(metric.cpu.process_percent)}</td><td>{formatPercent(metric.ram.used_percent)}</td><td>{metric.response_latency_ms == null ? '—' : formatLatency(metric.response_latency_ms)}</td></tr>)}
+      </tbody></table></div>
+    </section>
+  </div>;
+}
+
 function CorrelationDrawer({ id, detail, loading, onClose }: { id: string; detail: CorrelationDetail | null; loading: boolean; onClose: () => void }) {
   const timeline = useMemo(() => {
     if (!detail) return [];
@@ -679,6 +732,7 @@ function App() {
   const [transactions, setTransactions] = useState<ListResult<TransactionEvent>>({ items: [], total: 0 });
   const [operations, setOperations] = useState<ListResult<OperationState>>({ items: [], total: 0 });
   const [users, setUsers] = useState<ListResult<UserMetric>>({ items: [], total: 0 });
+  const [hardware, setHardware] = useState<HardwareMonitorResponse>(EMPTY_HARDWARE);
   const [userCursor, setUserCursor] = useState<string>();
   const [userCursorHistory, setUserCursorHistory] = useState<Array<string | null>>([]);
   const [loading, setLoading] = useState(false);
@@ -729,7 +783,7 @@ function App() {
         setRefreshKey((value) => value + 1);
       }
     };
-    const timer = window.setInterval(refresh, 30_000);
+    const timer = window.setInterval(refresh, 15_000);
     const visibility = () => { if (document.visibilityState === 'visible') refresh(); };
     document.addEventListener('visibilitychange', visibility);
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', visibility); };
@@ -744,14 +798,19 @@ function App() {
     setError('');
     const requestStatus = normalizeStatus(page, status);
     const filters = { from: period.from, to: period.to, status: requestStatus, search: requestSearch || undefined, limit: 200 };
-    const pageRequest = page === 'transactions'
-      ? adminApi.transactions(token, filters, controller.signal).then(setTransactions)
+    const pageRequest = page === 'services'
+      ? adminApi.services(token, 100, controller.signal).then(setHardware)
+      : page === 'transactions'
+        ? adminApi.transactions(token, filters, controller.signal).then(setTransactions)
       : page === 'operations'
         ? adminApi.operations(token, filters, controller.signal).then(setOperations)
         : page === 'users'
           ? adminApi.users(token, period.from, period.to, requestStatus, userCursor, controller.signal).then(setUsers)
           : Promise.resolve();
-    Promise.all([adminApi.overview(token, period.from, period.to, controller.signal).then(setOverview), pageRequest])
+    const overviewRequest = page === 'services'
+      ? Promise.resolve()
+      : adminApi.overview(token, period.from, period.to, controller.signal).then(setOverview);
+    Promise.all([overviewRequest, pageRequest])
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
         if (reason instanceof ApiError && reason.status === 401) { unauthorized(); return; }
@@ -831,24 +890,25 @@ function App() {
           <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="메뉴 열기"><Menu size={21} /></button>
           <div className="page-title"><p className="eyebrow">{meta.eyebrow}</p><h1>{meta.title}</h1></div>
           <div className="top-actions">
-            <div className="last-updated"><i className={refreshing ? 'pulse' : ''} /><span>{refreshing ? '동기화 중' : `${formatDate(overview.generated_at || new Date(now).toISOString(), false)} 갱신`}</span></div>
+            <div className="last-updated"><i className={refreshing ? 'pulse' : ''} /><span>{refreshing ? '동기화 중' : `${formatDate((page === 'services' ? hardware.generated_at : overview.generated_at) || new Date(now).toISOString(), false)} 갱신`}</span></div>
             <button className="icon-button" onClick={() => setDark((value) => !value)} aria-label={dark ? '밝은 화면' : '어두운 화면'}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
             <button className="icon-button" onClick={refresh} disabled={refreshing} aria-label="새로고침"><RefreshCcw className={refreshing ? 'spin' : ''} size={18} /></button>
           </div>
         </header>
 
-        <section className="filterbar" aria-label="데이터 필터">
+        {page !== 'services' && <section className="filterbar" aria-label="데이터 필터">
           <div className="filter-icon"><ListFilter size={17} /></div>
           <label><span>조회 기간</span><select value={range} onChange={(event) => changeRange(event.target.value as RangeKey)}>{Object.entries(RANGE_LABELS).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
           <label><span>상태</span><select value={status} onChange={(event) => changeStatus(event.target.value)}><option value="">전체 상태</option>{Object.entries(page === 'users' ? ACCOUNT_STATUS_LABELS : STATUS_LABELS).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
           <label className="search-filter"><span>{page === 'users' ? '현재 페이지 검색' : '빠른 검색'}</span><div><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={page === 'users' ? '현재 페이지의 사용자 ID 검색' : '사용자 또는 correlation ID'} />{search && <button onClick={() => setSearch('')} aria-label="검색어 지우기"><X size={14} /></button>}</div></label>
           <div className="filter-summary"><Clock3 size={15} /><span>{RANGE_LABELS[range]}</span></div>
-        </section>
+        </section>}
 
         {error && <div className="error-banner" role="alert"><CircleAlert size={18} /><span>{error}</span><button onClick={() => setError('')} aria-label="오류 닫기"><X size={16} /></button></div>}
 
         <div className="page-body">
           {page === 'overview' && <OverviewPage overview={overview} />}
+          {page === 'services' && <ServicesPage data={hardware} loading={loading} />}
           {page === 'transactions' && <TransactionsPage result={transactions} loading={loading} onCorrelation={setCorrelationId} />}
           {page === 'operations' && <OperationsPage result={operations} loading={loading} onCorrelation={setCorrelationId} />}
           {page === 'users' && <UsersPage result={users} loading={loading} token={token} search={appliedSearch} pageNumber={userCursorHistory.length + 1} canGoPrevious={userCursorHistory.length > 0} canGoNext={Boolean(users.next_cursor)} onPrevious={previousUserPage} onNext={nextUserPage} onChanged={refresh} onUnauthorized={unauthorized} />}

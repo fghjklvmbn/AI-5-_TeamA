@@ -194,6 +194,9 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
           `memorypal.internetEnabled.${user.id}`,
           `memorypal.thinkingMode.${user.id}`,
           `memorypal.reasoningEffort.${user.id}`,
+          `memorypal.selectedModel.${user.id}`,
+          `memorypal.conversationMode.${user.id}`,
+          `memorypal.characterId.${user.id}`,
         ]),
         5_000,
       ).catch(() => undefined)

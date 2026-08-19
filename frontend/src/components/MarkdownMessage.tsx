@@ -1,5 +1,5 @@
-import React from 'react';
-import { Linking, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Linking, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme, type ThemeColors } from '../theme';
 
@@ -181,7 +181,26 @@ function renderInline(source: string, styles: ReturnType<typeof createStyles>): 
   return result;
 }
 
-export function MarkdownMessage({ children }: { children: string }) {
+function StreamingCursor() {
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const animation = Animated.loop(Animated.sequence([
+      Animated.timing(opacity, { toValue: 0.2, duration: 420, useNativeDriver: true }),
+      Animated.timing(opacity, { toValue: 1, duration: 420, useNativeDriver: true }),
+    ]));
+    animation.start();
+    return () => animation.stop();
+  }, [opacity]);
+
+  return <Animated.Text accessible={false} style={[stylesForCursor.cursor, { opacity }]}>▍</Animated.Text>;
+}
+
+const stylesForCursor = StyleSheet.create({
+  cursor: { fontWeight: '900' },
+});
+
+export function MarkdownMessage({ children, streaming = false }: { children: string; streaming?: boolean }) {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const blocks = parseMarkdownBlocks(children);
@@ -190,29 +209,30 @@ export function MarkdownMessage({ children }: { children: string }) {
     <View style={styles.body}>
       {blocks.map((block, index) => {
         const key = `block-${index}`;
+        const cursor = streaming && index === blocks.length - 1 ? <StreamingCursor /> : null;
         if (block.type === 'heading') {
           const headingStyle = block.level <= 1
             ? styles.heading1
             : block.level === 2 ? styles.heading2 : styles.heading3;
-          return <Text key={key} selectable style={headingStyle}>{renderInline(block.text, styles)}</Text>;
+          return <Text key={key} selectable style={headingStyle}>{renderInline(block.text, styles)}{cursor}</Text>;
         }
         if (block.type === 'unordered-list' || block.type === 'ordered-list') {
           return (
             <View key={key} style={styles.listRow}>
               <Text style={styles.listMarker}>{block.type === 'ordered-list' ? `${block.number}.` : '•'}</Text>
-              <Text selectable style={styles.listText}>{renderInline(block.text, styles)}</Text>
+              <Text selectable style={styles.listText}>{renderInline(block.text, styles)}{cursor}</Text>
             </View>
           );
         }
         if (block.type === 'quote') {
-          return <Text key={key} selectable style={styles.quote}>{renderInline(block.text, styles)}</Text>;
+          return <Text key={key} selectable style={styles.quote}>{renderInline(block.text, styles)}{cursor}</Text>;
         }
         if (block.type === 'code') {
           return (
             <View key={key} style={styles.codeContainer}>
               {!!block.language && <Text style={styles.codeLanguage}>{block.language}</Text>}
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <Text selectable style={styles.codeBlock}>{block.text}</Text>
+                <Text selectable style={styles.codeBlock}>{block.text}{cursor}</Text>
               </ScrollView>
             </View>
           );
@@ -234,6 +254,7 @@ export function MarkdownMessage({ children }: { children: string }) {
                     {block.headers.map((_, cellIndex) => (
                       <Text key={`cell-${cellIndex}`} style={styles.tableCell}>
                         {renderInline(row[cellIndex] ?? '', styles)}
+                        {rowIndex === block.rows.length - 1 && cellIndex === block.headers.length - 1 ? cursor : null}
                       </Text>
                     ))}
                   </View>
@@ -242,8 +263,8 @@ export function MarkdownMessage({ children }: { children: string }) {
             </ScrollView>
           );
         }
-        if (block.type === 'rule') return <View key={key} style={styles.rule} />;
-        return <Text key={key} selectable style={styles.paragraph}>{renderInline(block.text, styles)}</Text>;
+        if (block.type === 'rule') return <View key={key} style={styles.rule}>{cursor}</View>;
+        return <Text key={key} selectable style={styles.paragraph}>{renderInline(block.text, styles)}{cursor}</Text>;
       })}
     </View>
   );

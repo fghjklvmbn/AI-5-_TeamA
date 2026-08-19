@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .admin_routes import router as admin_router
+from .model_routes import router as model_router
+from .mcp_routes import router as mcp_router
 from .config import Settings, load_settings  # Workers read deployment endpoints at startup.
 from .database import AccountAccessFenceError
 from .database_factory import create_database
@@ -24,12 +26,15 @@ from .services.archive_cleanup import (
 )
 from .services.agent_loop import AgentLoop
 from .services.memory_engine import MemoryEngine
+from .services.model_manager import ModelManager
 from .services.semantic_rag import SemanticRagEngine
 from .services.operation_state import OperationStateManager, install_operation_middleware
 from .services.pipeline import ModelPipeline
 from .services.portrait_engine import PortraitEngine
 from .services.task_queue import create_task_queue
+from .services.tool_registry import GatewayToolRegistry
 from .services.web_search import WebSearchEngine
+from .services.hardware_monitor import HardwareMonitorHub
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -53,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         legacy_voice_worker = asyncio.create_task(
             legacy_voice_reconciliation_loop(app)
         )
+        hardware_monitor_worker = asyncio.create_task(app.state.hardware_monitor.run())
         # Durable queued/analyzing jobs survive an unclean restart. The lease in
         # PortraitEngine ensures only one app worker can actually resume each job.
         for row in db.list_active_portraits():
@@ -67,14 +73,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             cleanup_worker.cancel()
             legacy_voice_worker.cancel()
+            hardware_monitor_worker.cancel()
             tasks = list(app.state.portrait_tasks.values())
             tasks.extend(app.state.archive_cleanup_tasks)
+            tasks.extend(app.state.chat_postprocess_tasks)
             for task in tasks:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.gather(cleanup_worker, return_exceptions=True)
             await asyncio.gather(legacy_voice_worker, return_exceptions=True)
+            await asyncio.gather(hardware_monitor_worker, return_exceptions=True)
             queue_client = getattr(task_queue, "client", None)
             if queue_client is not None:
                 await asyncio.to_thread(queue_client.close)
@@ -115,17 +124,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.memory_engine = MemoryEngine(db)
     app.state.document_engine = DocumentEngine(db)
     app.state.web_search_engine = WebSearchEngine(resolved.web_search_max_results)
+    app.state.tool_registry = GatewayToolRegistry(
+        app.state.memory_engine, app.state.document_engine, app.state.web_search_engine,
+    )
     app.state.pipeline = ModelPipeline(resolved)
+    app.state.model_manager = ModelManager(resolved)
+    app.state.hardware_monitor = HardwareMonitorHub(resolved)
     app.state.semantic_rag = SemanticRagEngine(
         db, app.state.pipeline, app.state.document_engine,
     )
     app.state.agent_loop = AgentLoop(
         app.state.pipeline, semantic_rag=app.state.semantic_rag,
+        tool_registry=app.state.tool_registry,
     )
     app.state.task_queue = task_queue
     app.state.portrait_engine = PortraitEngine(db)
     app.state.portrait_tasks = {}
     app.state.archive_cleanup_tasks = set()
+    app.state.chat_postprocess_tasks = set()
     # The deployment uses a single modest GPU. Serialize portrait jobs so two
     # persona models are never asked to occupy VRAM at the same time.
     app.state.portrait_generation_semaphore = asyncio.Semaphore(1)
@@ -160,6 +176,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(router)
+    app.include_router(mcp_router)
+    app.include_router(model_router)
     app.include_router(admin_router)
     return app
 

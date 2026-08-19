@@ -1,6 +1,6 @@
 import { useAudioPlayer } from 'expo-audio';
 import * as DocumentPicker from 'expo-document-picker';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -17,9 +17,12 @@ import {
 import { api } from '../api';
 import { playWebAudio, unlockWebAudio } from '../audioPlayback';
 import { MarkdownMessage } from '../components/MarkdownMessage';
+import { ConversationModeTabs } from '../components/ConversationModeTabs';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
-import type { Attachment, Message, Persona, ReasoningEffort, Session } from '../types';
+import type { Attachment, CharacterActivity, CharacterId, ConversationMode, Message, Persona, ReasoningEffort, Session } from '../types';
+
+const CharacterStage = React.lazy(() => import('../components/CharacterStage'));
 
 type Props = {
   token: string;
@@ -32,10 +35,15 @@ type Props = {
   internetEnabled: boolean;
   thinkingMode: boolean;
   reasoningEffort?: ReasoningEffort;
+  modelKey?: string;
+  conversationMode: ConversationMode;
+  characterId: CharacterId;
   incomingMessage?: Message;
   onIncomingMessageConsumed: () => void;
   onSessionChange: (id: string) => void;
   onVoiceProcessingChange: (active: boolean, transcript?: string) => void;
+  onConversationModeChange: (mode: ConversationMode) => void;
+  onCharacterChange: (characterId: CharacterId) => void;
 };
 
 function isAbortError(reason: unknown): boolean {
@@ -106,10 +114,15 @@ export function ChatScreen({
   internetEnabled,
   thinkingMode,
   reasoningEffort,
+  modelKey,
+  conversationMode,
+  characterId,
   incomingMessage,
   onIncomingMessageConsumed,
   onSessionChange,
   onVoiceProcessingChange,
+  onConversationModeChange,
+  onCharacterChange,
 }: Props) {
   const { colors } = useTheme();
   const styles = createStyles(colors);
@@ -129,6 +142,7 @@ export function ChatScreen({
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string>();
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<string>();
   const [generatingAudioMessageId, setGeneratingAudioMessageId] = useState<string>();
+  const [characterSpeaking, setCharacterSpeaking] = useState(false);
   const generatingAudioMessageIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView>(null);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -143,8 +157,22 @@ export function ChatScreen({
     || attachmentBusy
     || !!deletingAttachmentId
     || !!deletingSessionId
-    || !!regeneratingMessageId
-    || !!generatingAudioMessageId;
+    || !!regeneratingMessageId;
+  const shouldSpeak = conversationMode === 'live' || voiceReplyEnabled;
+  const characterActivity: CharacterActivity = voiceRecorder.isRecording
+    ? 'listening'
+    : voiceProcessing || busy
+      ? 'thinking'
+      : characterSpeaking
+        ? 'speaking'
+        : 'idle';
+
+  useEffect(() => {
+    if (!autoPlayMessageId) return;
+    setCharacterSpeaking(true);
+    const timer = setTimeout(() => setCharacterSpeaking(false), 8_000);
+    return () => clearTimeout(timer);
+  }, [autoPlayMessageId]);
 
   const acquireContextMutation = (): symbol | undefined => {
     if (contextMutationLockRef.current) return undefined;
@@ -269,14 +297,14 @@ export function ChatScreen({
     setMessages((current) => current.some((message) => message.id === incomingMessage.id)
       ? current
       : [...current, incomingMessage]);
-    if (voiceReplyEnabled) {
+    if (shouldSpeak) {
       if (incomingMessage.audio_url) {
         if (isActiveRef.current) setAutoPlayMessageId(incomingMessage.id);
       } else setError('답변은 도착했지만 음성을 만들지 못했어요. 잠시 후 다시 시도해 주세요.');
     }
     void loadSessions().catch(() => undefined);
     onIncomingMessageConsumed();
-  }, [incomingMessage, loadSessions, onIncomingMessageConsumed, voiceReplyEnabled]);
+  }, [incomingMessage, loadSessions, onIncomingMessageConsumed, shouldSpeak]);
 
   const send = async (valueOverride?: string, preserveInput = false) => {
     const value = (valueOverride ?? text).trim();
@@ -303,6 +331,19 @@ export function ChatScreen({
     setBusy(true);
     setError('');
     setMessages((current) => [...current, optimisticMessage]);
+    let bufferedDelta = '';
+    let deltaTimer: ReturnType<typeof setTimeout> | undefined;
+    let audioMessage: Message | undefined;
+    const flushDelta = () => {
+      if (!bufferedDelta) return;
+      const delta = bufferedDelta;
+      bufferedDelta = '';
+      setMessages((current) => current.map((message) => (
+        message.id === optimisticId
+          ? { ...message, assistant_text: message.assistant_text + delta }
+          : message
+      )));
+    };
     try {
       const response = await api.chatStream(
         token,
@@ -312,15 +353,21 @@ export function ChatScreen({
             activeSessionIdRef.current !== requestedSessionId
             || selectionVersionRef.current !== requestedSelectionVersion
           ) return;
-          setMessages((current) => current.map((message) => (
-            message.id === optimisticId
-              ? { ...message, assistant_text: message.assistant_text + delta }
-              : message
-          )));
+          bufferedDelta += delta;
+          if (!deltaTimer) {
+            deltaTimer = setTimeout(() => {
+              deltaTimer = undefined;
+              flushDelta();
+            }, 50);
+          }
         },
-        requestedSessionId, voiceId, voiceReplyEnabled, casualMode, persona, internetEnabled, thinkingMode,
+        requestedSessionId, voiceId, false, casualMode, persona, internetEnabled, thinkingMode,
         reasoningEffort,
+        modelKey,
       );
+      if (deltaTimer) clearTimeout(deltaTimer);
+      deltaTimer = undefined;
+      flushDelta();
       const responseIsCurrent = activeSessionIdRef.current === requestedSessionId
         && selectionVersionRef.current === requestedSelectionVersion;
       if (responseIsCurrent) {
@@ -328,11 +375,7 @@ export function ChatScreen({
           preserveLocalStateForSessionRef.current = response.session.id;
           changeSession(response.session.id);
         }
-        if (voiceReplyEnabled) {
-          if (response.message.audio_url) {
-            if (isActiveRef.current) setAutoPlayMessageId(response.message.id);
-          } else setError('답변은 도착했지만 음성을 만들지 못했어요. 잠시 후 다시 시도해 주세요.');
-        }
+        if (shouldSpeak) audioMessage = response.message;
         setMessages((current) => [
           ...current.filter((message) => message.id !== optimisticId && message.id !== response.message.id),
           response.message,
@@ -375,8 +418,26 @@ export function ChatScreen({
         if (!preserveInput) setText(value);
       }
     } finally {
+      if (deltaTimer) clearTimeout(deltaTimer);
       setBusy(false);
       releaseContextMutation(operationLock);
+      if (audioMessage) {
+        const target = audioMessage;
+        generatingAudioMessageIdRef.current = target.id;
+        setGeneratingAudioMessageId(target.id);
+        void api.messageAudio(token, target.id, voiceId).then((updated) => {
+          if (activeSessionIdRef.current !== requestedSessionId || !updated.audio_url) return;
+          setMessages((current) => upsertMessage(current, updated));
+          if (isActiveRef.current) setAutoPlayMessageId(updated.id);
+        }).catch((reason) => {
+          if (activeSessionIdRef.current === requestedSessionId) {
+            setError(messageFrom(reason, '답변은 도착했지만 음성을 만들지 못했어요.'));
+          }
+        }).finally(() => {
+          generatingAudioMessageIdRef.current = undefined;
+          setGeneratingAudioMessageId(undefined);
+        });
+      }
     }
   };
 
@@ -405,12 +466,13 @@ export function ChatScreen({
         token,
         message.id,
         voiceId,
-        voiceReplyEnabled,
+        shouldSpeak,
         casualMode,
         persona,
         internetEnabled,
         thinkingMode,
         reasoningEffort,
+        modelKey,
       );
       const responseIsCurrent = activeSessionIdRef.current === requestedSessionId
         && selectionVersionRef.current === requestedSelectionVersion;
@@ -420,7 +482,7 @@ export function ChatScreen({
       if (responseIsCurrent || returnedToMutatedSession) {
         // A completed server mutation is authoritative when the user has returned to that same session.
         setMessages((current) => upsertMessage(current, response.message));
-        if (voiceReplyEnabled) {
+        if (shouldSpeak) {
           if (response.message.audio_url) {
             if (isActiveRef.current) setAutoPlayMessageId(response.message.id);
           } else setError('답변은 다시 생성했지만 음성을 만들지 못했어요.');
@@ -495,14 +557,14 @@ export function ChatScreen({
         return;
       }
       setVoiceProcessing(true);
-      onVoiceProcessingChange(true);
+      if (conversationMode !== 'live') onVoiceProcessingChange(true);
       const transcript = await voiceRecorder.stop();
       if (!isActiveRef.current) return;
       if (!transcript) {
         setError('음성을 인식하지 못했어요. 조금 더 가까이에서 다시 말해 주세요.');
         return;
       }
-      onVoiceProcessingChange(true, transcript);
+      if (conversationMode !== 'live') onVoiceProcessingChange(true, transcript);
       setVoiceProcessing(false);
       await send(transcript, true);
     } catch (reason) {
@@ -511,7 +573,7 @@ export function ChatScreen({
       }
     } finally {
       setVoiceProcessing(false);
-      onVoiceProcessingChange(false);
+      if (conversationMode !== 'live') onVoiceProcessingChange(false);
     }
   };
 
@@ -668,7 +730,14 @@ export function ChatScreen({
         ><Text style={styles.plus}>＋</Text></Pressable>
       </View>
 
-      <ScrollView
+      <ConversationModeTabs value={conversationMode} onChange={onConversationModeChange} />
+
+      <View style={[styles.conversationArea, conversationMode === 'hybrid' && styles.hybridArea]}>
+      {conversationMode !== 'chat' && <Suspense fallback={<View style={styles.characterLoading}><ActivityIndicator color={colors.primary} /><Text style={styles.characterLoadingText}>캐릭터 영역을 준비하고 있어요…</Text></View>}>
+        <CharacterStage characterId={characterId} activity={characterActivity} onCharacterChange={onCharacterChange} />
+      </Suspense>}
+      {conversationMode !== 'live' && <ScrollView
+        style={styles.messagePane}
         contentContainerStyle={styles.messages}
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
         ref={scrollRef}
@@ -685,7 +754,11 @@ export function ChatScreen({
             <View style={[styles.bubble, styles.userBubble]}><Text style={styles.userText}>{message.user_text}</Text></View>
             {!!(message.assistant_text.trim() || message.audio_url) && (
               <View style={[styles.bubble, styles.assistantBubble]}>
-                {!!message.assistant_text.trim() && <MarkdownMessage>{message.assistant_text}</MarkdownMessage>}
+                {!!message.assistant_text.trim() && (
+                  <MarkdownMessage streaming={message.id.startsWith('pending-')}>
+                    {message.assistant_text}
+                  </MarkdownMessage>
+                )}
                 {!!message.audio_url
                   ? <AudioButton uri={message.audio_url} onError={setError} autoPlay={autoPlayMessageId === message.id} />
                   : !!message.assistant_text.trim() && !message.id.startsWith('pending-') && (
@@ -723,7 +796,8 @@ export function ChatScreen({
             <ActivityIndicator color={colors.primary} />
           </View>
         )}
-      </ScrollView>
+      </ScrollView>}
+      </View>
 
       {!!error && <Text style={styles.error}>{error}</Text>}
       {(voiceRecorder.isRecording || voiceProcessing) && (
@@ -733,7 +807,7 @@ export function ChatScreen({
             : `음성 녹음 중 · ${Math.max(1, Math.round(voiceRecorder.durationMillis / 1000))}초 · 다시 누르면 인식해요`}
         </Text>
       )}
-      {!!attachments.length && (
+      {conversationMode !== 'live' && !!attachments.length && (
         <ScrollView
           contentContainerStyle={styles.attachmentList}
           horizontal
@@ -758,7 +832,19 @@ export function ChatScreen({
           ))}
         </ScrollView>
       )}
-      <View style={styles.composer}>
+      {conversationMode === 'live' ? <View style={styles.liveComposer}>
+        <Text style={styles.liveGuide}>{voiceRecorder.isRecording ? '말씀을 마치면 버튼을 다시 눌러주세요' : '버튼을 누르고 캐릭터에게 말해보세요'}</Text>
+        <Pressable
+          accessibilityLabel={voiceRecorder.isRecording ? '실시간 음성 입력 정지' : '실시간 음성 입력 시작'}
+          disabled={contextMutationBusy || voiceProcessing}
+          onPress={() => void toggleVoiceInput()}
+          style={[styles.liveMic, voiceRecorder.isRecording && styles.liveMicActive, (contextMutationBusy || voiceProcessing) && styles.sendDisabled]}
+        >
+          {voiceProcessing
+            ? <ActivityIndicator color="#FFFFFF" size="large" />
+            : <Text style={styles.liveMicText}>{voiceRecorder.isRecording ? '■' : '●'}</Text>}
+        </Pressable>
+      </View> : <View style={styles.composer}>
         <TextInput
           maxLength={8000}
           multiline
@@ -766,7 +852,9 @@ export function ChatScreen({
           onSubmitEditing={() => void send()}
           placeholder="메시지를 입력하세요…"
           placeholderTextColor="#A49DAB"
+          returnKeyType="send"
           style={styles.input}
+          submitBehavior="submit"
           value={text}
         />
         <Pressable
@@ -794,7 +882,7 @@ export function ChatScreen({
         <Pressable disabled={!text.trim() || contextMutationBusy || voiceRecorder.isRecording || voiceProcessing} onPress={() => void send()} style={[styles.send, (!text.trim() || contextMutationBusy || voiceRecorder.isRecording || voiceProcessing) && styles.sendDisabled]}>
           <Text style={styles.sendText}>↑</Text>
         </Pressable>
-      </View>
+      </View>}
 
       <Modal animationType="slide" onRequestClose={() => setDrawer(false)} transparent visible={drawer}>
         <Pressable onPress={() => setDrawer(false)} style={styles.backdrop}>
@@ -843,6 +931,11 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   headerTitleWrap: { flex: 1, alignItems: 'center' },
   headerTitle: { color: colors.ink, fontSize: 15, fontWeight: '800', maxWidth: 230 },
   headerSub: { color: colors.muted, fontSize: 10, marginTop: 2 },
+  conversationArea: { flex: 1, minHeight: 0 },
+  hybridArea: { flexDirection: 'row' },
+  messagePane: { flex: 1, minWidth: 0 },
+  characterLoading: { flex: 1, minHeight: 280, alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: colors.subtle },
+  characterLoadingText: { color: colors.muted, fontSize: 11 },
   messages: { flexGrow: 1, padding: 18, paddingBottom: 25 },
   empty: { alignItems: 'center', marginTop: 80, paddingHorizontal: 30 },
   emptyMark: { width: 52, height: 52, textAlign: 'center', textAlignVertical: 'center', paddingTop: 10, borderRadius: 18, overflow: 'hidden', backgroundColor: colors.primarySoft, color: colors.primaryDark, fontSize: 22, fontWeight: '900' },
@@ -867,6 +960,11 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   attachmentDelete: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   attachmentDeleteText: { color: colors.muted, fontSize: 21, lineHeight: 23 },
   composer: { flexDirection: 'row', alignItems: 'center', gap: 9, padding: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: colors.surface },
+  liveComposer: { minHeight: 128, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: colors.surface },
+  liveGuide: { color: colors.muted, fontSize: 10, fontWeight: '700' },
+  liveMic: { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primary, borderWidth: 5, borderColor: colors.primarySoft },
+  liveMicActive: { backgroundColor: colors.danger, borderColor: colors.dangerSoft },
+  liveMicText: { color: '#FFFFFF', fontSize: 25, fontWeight: '900' },
   input: { flex: 1, minHeight: 68, maxHeight: 110, backgroundColor: colors.input, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 22, textAlignVertical: 'center', color: colors.ink, fontSize: 15, lineHeight: 22 },
   send: { width: 46, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primary },
   attachButton: { width: 42, height: 46, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.input },

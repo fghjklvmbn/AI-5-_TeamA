@@ -119,3 +119,17 @@ def test_agent_loop_skips_planner_without_any_retrieved_evidence():
     ))
     assert result.steps_used == 0
     assert result.memories == []
+
+
+def test_agent_loop_skips_second_llm_call_for_short_general_chat():
+    class Pipeline:
+        async def plan_agent_step(self, **_kwargs):
+            raise AssertionError("general chat should use eager retrieval directly")
+
+    result = asyncio.run(AgentLoop(Pipeline()).gather_context(
+        user_id="u1", session_id="s1", user_text="RAG가 뭐야?", history=[],
+        persona="none", internet_enabled=False, memory_engine=MemoryEngine(),
+        document_engine=DocumentEngine(), web_search_engine=WebEngine(),
+    ))
+    assert result.steps_used == 0
+    assert result.memories

@@ -26,6 +26,12 @@ x-gateway-environment: &gateway-environment
   MEMORYPAL_ARCHIVE_URL: http://archive:8004
   MEMORYPAL_ARCHIVE_PUBLIC_URL: ${MEMORYPAL_ARCHIVE_PUBLIC_URL:-http://127.0.0.1:8004}
   MEMORYPAL_REQUEST_TIMEOUT: ${MEMORYPAL_REQUEST_TIMEOUT:-300}
+  MEMORYPAL_MONITOR_INTERVAL_SECONDS: ${MEMORYPAL_MONITOR_INTERVAL_SECONDS:-15}
+  MEMORYPAL_MONITOR_STT_URL: http://stt:8100
+  MEMORYPAL_MONITOR_LLM_URL: ${MEMORYPAL_MONITOR_LLM_URL:-http://192.168.2.41:8101}
+  MEMORYPAL_MONITOR_TTS_URL: http://tts:8102
+  MEMORYPAL_MONITOR_GATEWAY_URL: http://127.0.0.1:8103
+  MEMORYPAL_MONITOR_ARCHIVE_URL: http://archive:8104
 
 x-gateway-service: &gateway-service
   image: memorypal-gateway:local
@@ -69,6 +75,21 @@ services:
     networks:
       - memorypal_data
 
+  monitor-archive:
+    image: memorypal-monitor:local
+    build:
+      context: .
+      dockerfile: deploy/docker/monitor.Dockerfile
+    restart: unless-stopped
+    pid: "service:archive"
+    network_mode: "service:archive"
+    depends_on:
+      archive:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set MEMORYPAL_MODEL_SERVICE_TOKEN in the Docker env file}
+    command: ["--service", "archive", "--host", "0.0.0.0", "--port", "8104", "--target-pid", "1", "--health-url", "http://127.0.0.1:8004/health", "--log-path", "/logs/archive.hardware.jsonl"]
+
   gateway:
     <<: *gateway-service
     depends_on:
@@ -86,6 +107,18 @@ services:
       timeout: 5s
       retries: 30
       start_period: 10s
+
+  monitor-gateway:
+    image: memorypal-monitor:local
+    restart: unless-stopped
+    pid: "service:gateway"
+    network_mode: "service:gateway"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set MEMORYPAL_MODEL_SERVICE_TOKEN in the Docker env file}
+    command: ["--service", "gateway", "--host", "0.0.0.0", "--port", "8103", "--target-pid", "1", "--health-url", "http://127.0.0.1:8010/v1/health", "--log-path", "/logs/gateway.hardware.jsonl"]
 
   worker:
     image: memorypal-gateway:local

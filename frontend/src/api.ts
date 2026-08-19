@@ -6,6 +6,11 @@ import type {
   ChatResponse,
   MemoryItem,
   Message,
+  HuggingFaceModel,
+  LocalModel,
+  ModelDownloadJob,
+  ModelDownloadLedger,
+  ModelManagerStatus,
   ModelReasoningCapabilities,
   Persona,
   PortraitResponse,
@@ -31,9 +36,9 @@ const AUDIO_EXTENSION_BY_MIME: Record<string, string> = {
 };
 
 function audioUploadMetadata(uri: string, blobType?: string) {
-  const normalizedBlobType = blobType?.split(';', 1)[0].trim().toLowerCase() ?? '';
+  const normalizedBlobType = blobType?.split(';', 1)[0]?.trim().toLowerCase() ?? '';
   const mimeExtension = AUDIO_EXTENSION_BY_MIME[normalizedBlobType];
-  const uriExtension = uri.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1].toLowerCase();
+  const uriExtension = uri.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1]?.toLowerCase();
   const knownUriExtension = uriExtension && Object.values(AUDIO_EXTENSION_BY_MIME).includes(uriExtension)
     ? uriExtension
     : undefined;
@@ -306,6 +311,7 @@ export const api = {
     internetEnabled = false,
     thinkingMode = false,
     reasoningEffort?: ReasoningEffort,
+    modelKey?: string,
   ) {
     return request<ChatResponse>(
       '/chat/messages',
@@ -321,6 +327,7 @@ export const api = {
           internet_enabled: internetEnabled,
           thinking_mode: thinkingMode,
           reasoning_effort: reasoningEffort,
+          model_key: persona === 'none' ? modelKey : undefined,
         }),
       },
       token,
@@ -338,6 +345,7 @@ export const api = {
     internetEnabled = false,
     thinkingMode = false,
     reasoningEffort?: ReasoningEffort,
+    modelKey?: string,
   ) {
     return streamingChatRequest(token, {
       text,
@@ -349,6 +357,7 @@ export const api = {
       internet_enabled: internetEnabled,
       thinking_mode: thinkingMode,
       reasoning_effort: reasoningEffort,
+      model_key: persona === 'none' ? modelKey : undefined,
     }, onDelta);
   },
   regenerate(
@@ -361,6 +370,7 @@ export const api = {
     internetEnabled = false,
     thinkingMode = false,
     reasoningEffort?: ReasoningEffort,
+    modelKey?: string,
   ) {
     return request<ChatResponse>(
       `/chat/messages/${messageId}/regenerate`,
@@ -374,6 +384,7 @@ export const api = {
           internet_enabled: internetEnabled,
           thinking_mode: thinkingMode,
           reasoning_effort: reasoningEffort,
+          model_key: persona === 'none' ? modelKey : undefined,
         }),
       },
       token,
@@ -392,12 +403,62 @@ export const api = {
   memories(token: string) {
     return request<MemoryItem[]>('/memories', {}, token);
   },
-  modelCapabilities(token: string, persona: Persona, signal?: AbortSignal) {
+  modelCapabilities(token: string, persona: Persona, signal?: AbortSignal, modelKey?: string) {
+    const selected = persona === 'none' && modelKey
+      ? `&model_key=${encodeURIComponent(modelKey)}`
+      : '';
     return request<ModelReasoningCapabilities>(
-      `/model-capabilities?persona=${encodeURIComponent(persona)}`,
+      `/model-capabilities?persona=${encodeURIComponent(persona)}${selected}`,
       { signal },
       token,
     );
+  },
+  modelManagerStatus(token: string, signal?: AbortSignal) {
+    return request<ModelManagerStatus>('/model-manager/status?persona=none', { signal }, token);
+  },
+  searchModels(token: string, query: string, signal?: AbortSignal) {
+    return request<{ models: HuggingFaceModel[] }>(
+      `/model-manager/search?persona=none&q=${encodeURIComponent(query)}`,
+      { signal }, token,
+    );
+  },
+  localModels(token: string, signal?: AbortSignal) {
+    return request<{ models: LocalModel[] }>('/model-manager/models?persona=none', { signal }, token);
+  },
+  downloadModel(token: string, model: string, quantization?: string) {
+    return request<ModelDownloadJob>('/model-manager/downloads', {
+      method: 'POST', body: JSON.stringify({ persona: 'none', model, quantization }),
+    }, token);
+  },
+  modelDownloads(token: string, signal?: AbortSignal) {
+    return request<ModelDownloadLedger>('/model-manager/downloads?persona=none', { signal }, token);
+  },
+  modelDownloadStatus(token: string, jobId: string, signal?: AbortSignal) {
+    return request<ModelDownloadJob>(
+      `/model-manager/downloads/${encodeURIComponent(jobId)}?persona=none`, { signal }, token,
+    );
+  },
+  dismissModelDownload(token: string, jobId: string) {
+    return request<{ dismissed: boolean; job_id: string }>(
+      `/model-manager/downloads/${encodeURIComponent(jobId)}?persona=none`,
+      { method: 'DELETE' },
+      token,
+    );
+  },
+  loadModel(token: string, modelKey: string, contextLength = 40960) {
+    return request<Record<string, unknown>>('/model-manager/load', {
+      method: 'POST', body: JSON.stringify({ persona: 'none', model_key: modelKey, context_length: contextLength }),
+    }, token);
+  },
+  unloadModel(token: string, instanceId: string) {
+    return request<Record<string, unknown>>('/model-manager/unload', {
+      method: 'POST', body: JSON.stringify({ persona: 'none', instance_id: instanceId }),
+    }, token);
+  },
+  deleteModel(token: string, modelKey: string) {
+    return request<{ deleted: boolean; model_key: string }>('/model-manager/delete', {
+      method: 'POST', body: JSON.stringify({ persona: 'none', model_key: modelKey }),
+    }, token);
   },
   addMemory(token: string, memoryType: MemoryItem['memory_type'], content: string) {
     return request<MemoryItem>(

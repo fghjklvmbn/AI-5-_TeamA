@@ -153,10 +153,14 @@ class Settings:
     root_path: str
     stt_url: str
     llm_url: str
+    llm_resource_url: str
     llm_api_key: str
     llm_default_model: str
     llm_companion_model: str
     llm_embedding_model: str
+    lmstudio_model_root: Path | None
+    lmstudio_cli: str
+    huggingface_token: str
     tts_url: str
     tts_public_url: str
     archive_url: str
@@ -167,6 +171,13 @@ class Settings:
     default_voice_reference_text: str
     request_timeout_seconds: float
     web_search_max_results: int
+    hardware_monitor_interval_seconds: int
+    hardware_monitor_log_path: Path
+    monitor_stt_url: str
+    monitor_llm_url: str
+    monitor_tts_url: str
+    monitor_gateway_url: str
+    monitor_archive_url: str
 
 
 def load_settings() -> Settings:
@@ -202,12 +213,20 @@ def load_settings() -> Settings:
         root_path=os.getenv("MEMORYPAL_ROOT_PATH", "").rstrip("/"),
         stt_url=os.getenv("MEMORYPAL_STT_URL", "http://127.0.0.1:8001").rstrip("/"),
         llm_url=os.getenv("MEMORYPAL_LLM_URL", "http://127.0.0.1:8002").rstrip("/"),
+        llm_resource_url=_optional_http_url("MEMORYPAL_LLM_RESOURCE_URL").rstrip("/"),
         llm_api_key=os.getenv("MEMORYPAL_LLM_API_KEY", "lm-studio"),
         llm_default_model=os.getenv("MEMORYPAL_DEFAULT_LLM_MODEL", "qwen3.5-4b"),
         llm_companion_model=os.getenv("MEMORYPAL_COMPANION_LLM_MODEL", "memorypal_ai"),
         llm_embedding_model=os.getenv(
             "MEMORYPAL_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5",
         ),
+        lmstudio_model_root=(
+            _path("MEMORYPAL_LMSTUDIO_MODEL_ROOT", os.getenv("MEMORYPAL_LMSTUDIO_MODEL_ROOT", ""))
+            if os.getenv("MEMORYPAL_LMSTUDIO_MODEL_ROOT", "").strip()
+            else None
+        ),
+        lmstudio_cli=os.getenv("MEMORYPAL_LMSTUDIO_CLI", "lms").strip() or "lms",
+        huggingface_token=os.getenv("MEMORYPAL_HUGGINGFACE_TOKEN", "").strip(),
         tts_url=os.getenv("MEMORYPAL_TTS_URL", "http://127.0.0.1:8003").rstrip("/"),
         tts_public_url=os.getenv("MEMORYPAL_TTS_PUBLIC_URL", "").rstrip("/"),
         archive_url=os.getenv("MEMORYPAL_ARCHIVE_URL", "http://127.0.0.1:8004").rstrip("/"),
@@ -226,4 +245,11 @@ def load_settings() -> Settings:
         ).strip(),
         request_timeout_seconds=float(os.getenv("MEMORYPAL_REQUEST_TIMEOUT", "300")),
         web_search_max_results=max(1, min(6, int(os.getenv("MEMORYPAL_WEB_SEARCH_MAX_RESULTS", "4")))),
+        hardware_monitor_interval_seconds=max(5, int(os.getenv("MEMORYPAL_HARDWARE_MONITOR_INTERVAL", "15"))),
+        hardware_monitor_log_path=_path("MEMORYPAL_HARDWARE_MONITOR_LOG_PATH", "./data/hardware_metrics.jsonl"),
+        monitor_stt_url=os.getenv("MEMORYPAL_MONITOR_STT_URL", "http://127.0.0.1:8100").rstrip("/"),
+        monitor_llm_url=os.getenv("MEMORYPAL_MONITOR_LLM_URL", "http://192.168.2.41:8101").rstrip("/"),
+        monitor_tts_url=os.getenv("MEMORYPAL_MONITOR_TTS_URL", "http://127.0.0.1:8102").rstrip("/"),
+        monitor_gateway_url=os.getenv("MEMORYPAL_MONITOR_GATEWAY_URL", "http://127.0.0.1:8103").rstrip("/"),
+        monitor_archive_url=os.getenv("MEMORYPAL_MONITOR_ARCHIVE_URL", "http://127.0.0.1:8104").rstrip("/"),
     )

@@ -1,4 +1,5 @@
 import json
+import asyncio
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
@@ -109,6 +110,39 @@ def test_chat_stream_emits_deltas_then_persists_completed_message(tmp_path):
             headers={"Authorization": f"Bearer {token}"},
         )
         assert history.json()[-1]["assistant_text"] == "안녕하세요"
+
+
+def test_chat_stream_does_not_wait_for_memory_extraction(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+
+    async def generate(*_args, **kwargs) -> str:
+        await kwargs["on_delta"]("완료")
+        return "완료"
+
+    extraction_release = asyncio.Event()
+
+    async def extract_memories(*_args, **_kwargs) -> list:
+        await extraction_release.wait()
+        return []
+
+    app.state.pipeline.generate = generate
+    app.state.pipeline.extract_memories = extract_memories
+    with TestClient(app) as client:
+        _user_id, token = register(client, "nonblocking-memory@example.com")
+        response = client.post(
+            "/v1/chat/messages/stream",
+            json={"text": "답해 줘", "speak": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        events = [json.loads(line) for line in response.text.splitlines()]
+        assert response.status_code == 200
+        assert events[-1]["type"] == "complete"
+        assert events[-1]["response"]["message"]["assistant_text"] == "완료"
+        assert app.state.chat_postprocess_tasks
 
 
 def test_chat_voice_switch_controls_output_length_policy(tmp_path):

@@ -61,6 +61,12 @@ export type Attachment = {
 
 export type Persona = 'default' | 'emotional_companion' | 'none';
 
+export type ConversationMode = 'live' | 'chat' | 'hybrid';
+
+export type CharacterId = 'haru' | 'nari';
+
+export type CharacterActivity = 'idle' | 'listening' | 'thinking' | 'speaking';
+
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 
 export type ModelReasoningCapabilities = {
@@ -70,6 +76,64 @@ export type ModelReasoningCapabilities = {
   reasoning_efforts: ReasoningEffort[];
   default_reasoning?: 'off' | 'on' | ReasoningEffort | null;
   source: 'lmstudio-native' | 'openai-compatible' | 'unavailable';
+};
+
+export type ModelManagerStatus = {
+  server_online: boolean;
+  model_count: number;
+  delete_supported: boolean;
+  delete_reason?: string | null;
+  checked_at: string;
+  error?: string | null;
+  gpu_metrics_available?: boolean;
+  gpu_name?: string;
+  gpu_count?: number;
+  vram_total_bytes?: number;
+  vram_used_bytes?: number;
+  vram_free_bytes?: number;
+  gpu_metrics_source?: 'llm-server';
+};
+
+export type HuggingFaceModel = {
+  id: string;
+  author: string;
+  downloads: number;
+  likes: number;
+  last_modified?: string | null;
+  pipeline_tag?: string | null;
+  tags: string[];
+  url: string;
+  parameter_billions?: number;
+};
+
+export type ModelDownloadLedger = { jobs: ModelDownloadJob[]; quota_bytes: number; used_bytes: number };
+
+export type LoadedModelInstance = {
+  id: string;
+  context_length?: number;
+};
+
+export type LocalModel = {
+  key: string;
+  display_name?: string;
+  type?: string;
+  publisher?: string;
+  quantization?: string;
+  size_bytes?: number;
+  max_context_length?: number;
+  format?: string;
+  loaded_instances?: LoadedModelInstance[];
+};
+
+export type ModelDownloadJob = {
+  job_id: string;
+  model?: string;
+  status?: string;
+  downloaded_bytes?: number;
+  total_size_bytes?: number;
+  bytes_per_second?: number;
+  estimated_completion?: string | number | null;
+  error?: string | null;
 };
 
 export type PortraitStatus = 'empty' | 'queued' | 'analyzing' | 'complete' | 'failed';

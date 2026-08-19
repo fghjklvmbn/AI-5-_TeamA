@@ -17,12 +17,29 @@ services:
       MEMORYPAL_STT_MODEL_DIR: /models/whisper
     volumes:
       - memorypal_stt_models:/models/whisper
+    ports:
+      - ${MEMORYPAL_MODEL_BIND_ADDRESS:-0.0.0.0}:8100:8100
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5)"]
       interval: 10s
       timeout: 10s
       retries: 60
       start_period: 30m
+
+  monitor-stt:
+    image: memorypal-monitor:local
+    build:
+      context: .
+      dockerfile: deploy/docker/monitor.Dockerfile
+    restart: unless-stopped
+    pid: "service:stt"
+    network_mode: "service:stt"
+    depends_on:
+      stt:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set the shared model service token}
+    command: ["--service", "stt", "--host", "0.0.0.0", "--port", "8100", "--target-pid", "1", "--health-url", "http://127.0.0.1:8001/health"]
 
   tts:
     image: memorypal-tts:local
@@ -45,12 +62,26 @@ services:
     volumes:
       - memorypal_tts_models:/models/huggingface
       - memorypal_tts_outputs:/app/backend/TTS_Server/outputs
+    ports:
+      - ${MEMORYPAL_MODEL_BIND_ADDRESS:-0.0.0.0}:8102:8102
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=5)"]
       interval: 10s
       timeout: 10s
       retries: 60
       start_period: 30m
+
+  monitor-tts:
+    image: memorypal-monitor:local
+    restart: unless-stopped
+    pid: "service:tts"
+    network_mode: "service:tts"
+    depends_on:
+      tts:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set the shared model service token}
+    command: ["--service", "tts", "--host", "0.0.0.0", "--port", "8102", "--target-pid", "1", "--health-url", "http://127.0.0.1:8003/health"]
 
   nginx:
     image: nginx:1.27-alpine

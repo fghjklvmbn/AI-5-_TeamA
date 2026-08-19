@@ -73,6 +73,7 @@ class ChatRequest(BaseModel):
     internet_enabled: bool = False
     thinking_mode: bool = False
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    model_key: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
 
 
 class RegenerateRequest(BaseModel):
@@ -83,6 +84,29 @@ class RegenerateRequest(BaseModel):
     internet_enabled: bool = False
     thinking_mode: bool = False
     reasoning_effort: Literal["low", "medium", "high"] | None = None
+    model_key: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+
+
+class ModelDownloadRequest(BaseModel):
+    persona: Literal["none"]
+    model: str = Field(min_length=3, max_length=300)
+    quantization: str | None = Field(default=None, min_length=2, max_length=40)
+
+
+class ModelLoadRequest(BaseModel):
+    persona: Literal["none"]
+    model_key: str = Field(min_length=1, max_length=300)
+    context_length: int = Field(default=40960, ge=512, le=131072)
+
+
+class ModelUnloadRequest(BaseModel):
+    persona: Literal["none"]
+    instance_id: str = Field(min_length=1, max_length=300)
+
+
+class ModelDeleteRequest(BaseModel):
+    persona: Literal["none"]
+    model_key: str = Field(min_length=1, max_length=300)
 
 
 class ModelReasoningCapabilitiesResponse(BaseModel):

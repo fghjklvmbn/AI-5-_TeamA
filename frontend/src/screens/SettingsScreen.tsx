@@ -10,8 +10,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { api } from '../api';
+import { ModelManager } from '../components/ModelManager';
 import { useTheme, type ThemeColors } from '../theme';
-import type { ModelReasoningCapabilities, Persona, ReasoningEffort, User, Voice, VoiceStatus } from '../types';
+import type { ConversationMode, ModelReasoningCapabilities, Persona, ReasoningEffort, User, Voice, VoiceStatus } from '../types';
 
 function ChoiceRow({ label, options }: { label: string; options: string[] }) {
   const { colors } = useTheme();
@@ -43,6 +44,8 @@ type Props = {
   reasoningEffort: ReasoningEffort;
   modelCapabilities?: ModelReasoningCapabilities;
   modelCapabilitiesLoading: boolean;
+  selectedModelKey?: string;
+  conversationMode: ConversationMode;
   onCasualModeChange: (enabled: boolean) => void;
   onPersonaChange: (persona: Persona) => void;
   onDarkModeChange: (enabled: boolean) => void;
@@ -50,6 +53,8 @@ type Props = {
   onInternetEnabledChange: (enabled: boolean) => void;
   onThinkingModeChange: (enabled: boolean) => void;
   onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  onSelectedModelKeyChange: (modelKey: string | undefined) => void;
+  onConversationModeChange: (mode: ConversationMode) => void;
   onOpenAccount: () => void;
   logout: () => Promise<void>;
 };
@@ -66,6 +71,8 @@ export function SettingsScreen({
   reasoningEffort,
   modelCapabilities,
   modelCapabilitiesLoading,
+  selectedModelKey,
+  conversationMode,
   onCasualModeChange,
   onPersonaChange,
   onDarkModeChange,
@@ -73,6 +80,8 @@ export function SettingsScreen({
   onInternetEnabledChange,
   onThinkingModeChange,
   onReasoningEffortChange,
+  onSelectedModelKeyChange,
+  onConversationModeChange,
   onOpenAccount,
   logout,
 }: Props) {
@@ -346,6 +355,28 @@ export function SettingsScreen({
         </View>
       </View>
 
+      <Text style={styles.sectionTitle}>기본 대화 모드</Text>
+      <View style={styles.card}>
+        <Text style={styles.switchDescription}>채팅 화면을 열 때 사용할 기본 탭을 선택하세요.</Text>
+        <View style={styles.modeChoices}>
+          {([
+            { id: 'live', icon: '◉', label: '실시간', detail: '음성 전용' },
+            { id: 'chat', icon: '≡', label: '채팅', detail: '기존 방식' },
+            { id: 'hybrid', icon: '◫', label: '하이브리드', detail: '캐릭터 + 채팅' },
+          ] as const).map((option) => <Pressable
+            accessibilityLabel={`기본 ${option.label} 대화 모드`}
+            accessibilityState={{ selected: conversationMode === option.id }}
+            key={option.id}
+            onPress={() => onConversationModeChange(option.id)}
+            style={styles.modeChoice}
+          >
+            <View style={[styles.modeCircle, conversationMode === option.id && styles.modeCircleActive]}><Text style={[styles.modeIcon, conversationMode === option.id && styles.modeIconActive]}>{option.icon}</Text></View>
+            <Text style={[styles.modeLabel, conversationMode === option.id && styles.modeLabelActive]}>{option.label}</Text>
+            <Text style={styles.modeDetail}>{option.detail}</Text>
+          </Pressable>)}
+        </View>
+      </View>
+
       <Text style={styles.sectionTitle}>페르소나</Text>
       <View style={styles.card}>
         <Pressable
@@ -383,6 +414,17 @@ export function SettingsScreen({
           </Text>
         </Pressable>
       </View>
+
+      {persona === 'none' && (
+        <>
+          <Text style={styles.sectionTitle}>AI 모델</Text>
+          <ModelManager
+            token={token}
+            selectedModelKey={selectedModelKey}
+            onSelectedModelKeyChange={onSelectedModelKeyChange}
+          />
+        </>
+      )}
 
       <Text style={styles.sectionTitle}>대화 스타일</Text>
       <View style={styles.card}>
@@ -679,6 +721,15 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   addVoiceButton: { marginBottom: 7, borderRadius: 999, backgroundColor: colors.primarySoft, paddingHorizontal: 13, paddingVertical: 8 },
   addVoiceButtonText: { color: colors.primaryDark, fontSize: 12, fontWeight: '800' },
   card: { backgroundColor: colors.surface, borderRadius: 20, borderWidth: 1, borderColor: colors.border, padding: 16 },
+  modeChoices: { flexDirection: 'row', justifyContent: 'space-around', gap: 8, marginTop: 15 },
+  modeChoice: { flex: 1, alignItems: 'center' },
+  modeCircle: { width: 46, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, backgroundColor: colors.input },
+  modeCircleActive: { borderColor: colors.primary, backgroundColor: colors.primary },
+  modeIcon: { color: colors.muted, fontSize: 18, fontWeight: '900' },
+  modeIconActive: { color: '#FFFFFF' },
+  modeLabel: { marginTop: 7, color: colors.muted, fontSize: 11, fontWeight: '800' },
+  modeLabelActive: { color: colors.primaryDark },
+  modeDetail: { marginTop: 2, color: colors.muted, fontSize: 8, textAlign: 'center' },
   personaOption: { borderRadius: 15, padding: 13, borderWidth: 1, borderColor: 'transparent' },
   personaOptionActive: { backgroundColor: colors.primarySoft, borderColor: '#D8C7FA' },
   personaHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

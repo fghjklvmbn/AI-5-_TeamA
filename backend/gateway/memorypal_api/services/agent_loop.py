@@ -4,6 +4,8 @@ import logging
 from dataclasses import dataclass
 
 from .pipeline import ModelPipeline, PipelineUnavailable
+from .tool_registry import GatewayToolRegistry, ToolCallContext
+from .web_search import WebSource
 
 
 logger = logging.getLogger(__name__)
@@ -14,16 +16,21 @@ class AgentContext:
     memories: list
     document_context: str
     web_context: str
+    web_sources: list[WebSource]
     steps_used: int
 
 
 class AgentLoop:
     """Bounded, read-only tool loop used before the final streamed answer."""
 
-    def __init__(self, pipeline: ModelPipeline, max_steps: int = 2, semantic_rag=None):
+    def __init__(
+        self, pipeline: ModelPipeline, max_steps: int = 2, semantic_rag=None,
+        tool_registry: GatewayToolRegistry | None = None,
+    ):
         self.pipeline = pipeline
         self.max_steps = max(1, min(3, max_steps))
         self.semantic_rag = semantic_rag
+        self.tool_registry = tool_registry
 
     @staticmethod
     def _merge_memories(current: list, additional: list, limit: int = 6) -> list:
@@ -41,6 +48,18 @@ class AgentLoop:
             return current
         return "\n\n".join(filter(None, (current, additional)))[:4_000]
 
+    @staticmethod
+    def _needs_refinement(user_text: str, internet_enabled: bool) -> bool:
+        # Web retrieval is policy-controlled and already completed through the
+        # shared tool registry. Do not ask a small selected model to decide
+        # whether that successful search should be retained.
+        del internet_enabled
+        normalized = user_text.casefold()
+        return any(keyword in normalized for keyword in (
+            "기억", "전에", "지난", "문서", "첨부",
+            "일정", "프로젝트", "파일", "노트", "메모",
+        ))
+
     async def gather_context(
         self,
         *,
@@ -53,11 +72,25 @@ class AgentLoop:
         memory_engine,
         document_engine,
         web_search_engine,
+        model_override: str | None = None,
     ) -> AgentContext:
         # Preserve the existing eager retrieval path. The loop may refine it,
         # but a planner outage must never remove memory, documents, or web context.
-        memories = list(memory_engine.retrieve(user_id, user_text))
-        document_context = document_engine.retrieve_context(user_id, session_id, user_text)
+        tool_context = ToolCallContext(
+            user_id=user_id, session_id=session_id, history=history,
+        )
+        if self.tool_registry is not None:
+            memory_result = await self.tool_registry.call(
+                "memory_search", {"query": user_text}, tool_context,
+            )
+            memories = list(memory_result.metadata.get("items") or [])
+            document_result = await self.tool_registry.call(
+                "document_search", {"query": user_text}, tool_context,
+            )
+            document_context = document_result.content
+        else:
+            memories = list(memory_engine.retrieve(user_id, user_text))
+            document_context = document_engine.retrieve_context(user_id, session_id, user_text)
         if self.semantic_rag is not None:
             semantic = await self.semantic_rag.retrieve(
                 user_id=user_id, session_id=session_id, query=user_text,
@@ -66,17 +99,36 @@ class AgentLoop:
             document_context = self._merge_documents(
                 document_context, semantic.document_context,
             )
-        web_context = (
-            await web_search_engine.retrieve_context(user_text, history)
-            if internet_enabled else ""
-        )
+        web_sources: list[WebSource] = []
+        if internet_enabled and self.tool_registry is not None:
+            web_result = await self.tool_registry.call(
+                "web_search", {"query": user_text}, tool_context,
+            )
+            web_context = web_result.content
+            web_sources = web_result.sources
+        else:
+            web_context = (
+                await web_search_engine.retrieve_context(user_text, history)
+                if internet_enabled else ""
+            )
         observations: list[str] = []
         attempted: set[tuple[str, str]] = set()
         allowed_tools = ["memory_search", "document_search"]
 
         if not memories and not document_context and not web_context:
             return AgentContext(
-                memories=[], document_context="", web_context="", steps_used=0,
+                memories=[], document_context="", web_context="", web_sources=[], steps_used=0,
+            )
+        # Eager semantic retrieval already provides useful context for ordinary
+        # short chat. Avoid a second LLM round trip unless the user explicitly
+        # asks for retrieval/refinement or has enabled live web search.
+        if not self._needs_refinement(user_text, internet_enabled):
+            return AgentContext(
+                memories=memories,
+                document_context=document_context,
+                web_context=web_context,
+                web_sources=web_sources,
+                steps_used=0,
             )
 
         steps_used = 0
@@ -95,6 +147,7 @@ class AgentLoop:
                     allowed_tools=allowed_tools,
                     attempted=[f"{tool}:{value}" for tool, value in sorted(attempted)],
                     persona=persona,
+                    model_override=model_override,
                 )
             except PipelineUnavailable:
                 logger.warning("Agent planner unavailable; continuing with eagerly retrieved context")
@@ -111,7 +164,13 @@ class AgentLoop:
 
             try:
                 if action == "memory_search":
-                    additional = memory_engine.retrieve(user_id, query)
+                    if self.tool_registry is not None:
+                        result = await self.tool_registry.call(
+                            "memory_search", {"query": query}, tool_context,
+                        )
+                        additional = list(result.metadata.get("items") or [])
+                    else:
+                        additional = memory_engine.retrieve(user_id, query)
                     if self.semantic_rag is not None:
                         semantic = await self.semantic_rag.retrieve(
                             user_id=user_id, session_id=session_id, query=query,
@@ -120,7 +179,13 @@ class AgentLoop:
                     memories = self._merge_memories(memories, additional)
                     observations.append(f"장기기억 추가 검색어: {query}")
                 elif action == "document_search":
-                    additional = document_engine.retrieve_context(user_id, session_id, query)
+                    if self.tool_registry is not None:
+                        result = await self.tool_registry.call(
+                            "document_search", {"query": query}, tool_context,
+                        )
+                        additional = result.content
+                    else:
+                        additional = document_engine.retrieve_context(user_id, session_id, query)
                     if self.semantic_rag is not None:
                         semantic = await self.semantic_rag.retrieve(
                             user_id=user_id, session_id=session_id, query=query,
@@ -143,5 +208,6 @@ class AgentLoop:
             memories=memories,
             document_context=document_context,
             web_context=web_context,
+            web_sources=web_sources,
             steps_used=steps_used,
         )

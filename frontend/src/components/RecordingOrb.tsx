@@ -69,11 +69,11 @@ export function RecordingOrb({ recording, amplitude, disabled, onPress }: Props)
 }
 
 const createStyles = (colors: ThemeColors) => StyleSheet.create({
-  wrap: { width: 296, height: 296, alignItems: 'center', justifyContent: 'center' },
-  ring: { position: 'absolute', width: 236, height: 236, borderRadius: 999 },
+  wrap: { width: 320, height: 320, alignItems: 'center', justifyContent: 'center' },
+  ring: { position: 'absolute', width: 262, height: 262, borderRadius: 999 },
   ringOuter: { backgroundColor: colors.primarySoft, opacity: 0.55 },
   ringInner: { backgroundColor: colors.lilac },
-  button: { width: 208, height: 208, borderRadius: 999, overflow: 'hidden', ...shadow },
+  button: { width: 234, height: 234, borderRadius: 999, overflow: 'hidden', ...shadow },
   pressed: { transform: [{ scale: 0.97 }] },
   disabled: { opacity: 0.55 },
   gradient: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },

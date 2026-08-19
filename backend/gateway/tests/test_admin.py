@@ -84,6 +84,12 @@ def test_allowlisted_admin_receives_only_privacy_safe_operational_data(tmp_path)
         assert me.json()["authorization_source"] == "allowlist"
         assert me.json()["user_id"] != registered["user"]["id"]
 
+        services = client.get("/v1/admin/services", headers=headers)
+        assert services.status_code == 200
+        assert {item["service"] for item in services.json()["services"]} == {
+            "stt", "llm", "tts", "gateway", "archive",
+        }
+
         app.state.db.record_transaction_event(
             user_id=registered["user"]["id"],
             operation_id=None,

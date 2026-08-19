@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { api } from '../api';
 import { unlockWebAudio } from '../audioPlayback';
 import { RecordingOrb } from '../components/RecordingOrb';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
-import type { ChatResponse, Persona, ReasoningEffort, User, Voice } from '../types';
+import type { ChatResponse, LocalModel, Persona, ReasoningEffort, User, Voice } from '../types';
 
 type Props = {
   token: string;
@@ -18,6 +18,8 @@ type Props = {
   internetEnabled: boolean;
   thinkingMode: boolean;
   reasoningEffort?: ReasoningEffort;
+  modelKey?: string;
+  onModelKeyChange: (modelKey: string | undefined) => void;
   onPersonaChange: (persona: Persona) => void;
   onVoiceIdChange: (voiceId: string | undefined) => void;
   onConversation: (response: ChatResponse) => void;
@@ -49,7 +51,6 @@ function DropdownField({
       <Text style={styles.sectionLabel}>{label}</Text>
       <Pressable onPress={() => setOpen((current) => !current)} style={[styles.dropdownButton, open && styles.dropdownButtonOpen]}>
         <Text numberOfLines={1} style={styles.dropdownValue}>{selected?.label ?? '선택하기'}</Text>
-        <Text style={styles.dropdownChevron}>{open ? '⌃' : '⌄'}</Text>
       </Pressable>
       {open && (
         <View style={styles.dropdownMenu}>
@@ -71,13 +72,18 @@ function DropdownField({
   );
 }
 
-export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceReplyEnabled, internetEnabled, thinkingMode, reasoningEffort, onPersonaChange, onVoiceIdChange, onConversation, onVoiceProcessingChange, onOpenAccount, onLogout }: Props) {
+export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceReplyEnabled, internetEnabled, thinkingMode, reasoningEffort, modelKey, onModelKeyChange, onPersonaChange, onVoiceIdChange, onConversation, onVoiceProcessingChange, onOpenAccount, onLogout }: Props) {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const recorder = useLiveRecorder(token);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [processing, setProcessing] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [localModels, setLocalModels] = useState<LocalModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelBusyKey, setModelBusyKey] = useState<string>();
+  const [modelError, setModelError] = useState('');
   const [status, setStatus] = useState('가운데 버튼을 누르고 편하게 말해 보세요.');
   const mountedRef = useRef(true);
 
@@ -94,6 +100,59 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
     { id: 'emotional_companion', label: '정서적 동반자', detail: '공감 중심 대화' },
     { id: 'none', label: '없음', detail: '역할 설정 없는 일반 채팅' },
   ];
+  const activeModelKey = persona === 'emotional_companion'
+    ? 'memorypal_ai'
+    : persona === 'default'
+      ? 'qwen3.5-4b'
+      : modelKey || 'qwen3.5-4b';
+  const activeLocalModel = localModels.find((model) => model.key === activeModelKey);
+  const activeModelLabel = persona === 'emotional_companion'
+    ? 'MemoryPal 정서적 동반자'
+    : activeLocalModel?.display_name || activeModelKey;
+
+  const refreshModels = async () => {
+    setModelsLoading(true);
+    setModelError('');
+    try {
+      const response = await api.localModels(token);
+      if (mountedRef.current) setLocalModels(Array.isArray(response.models) ? response.models : []);
+    } catch (reason) {
+      if (mountedRef.current) {
+        setModelError(reason instanceof Error ? reason.message : '모델 목록을 불러오지 못했습니다.');
+      }
+    } finally {
+      if (mountedRef.current) setModelsLoading(false);
+    }
+  };
+
+  const openModelMenu = () => {
+    setModelMenuOpen(true);
+    void refreshModels();
+  };
+
+  const selectModel = async (model: LocalModel) => {
+    if (modelBusyKey) return;
+    setModelBusyKey(model.key);
+    setModelError('');
+    try {
+      if (!model.loaded_instances?.length) await api.loadModel(token, model.key, 40960);
+      if (!mountedRef.current) return;
+      onPersonaChange('none');
+      onModelKeyChange(model.key);
+      setModelMenuOpen(false);
+      await refreshModels();
+    } catch (reason) {
+      if (mountedRef.current) {
+        const errorMessage = reason instanceof Error ? reason.message : '모델을 선택하지 못했습니다.';
+        if (errorMessage.includes('리소스가 부족하여 로드가 제한됩니다.')) {
+          Alert.alert('모델 로드 제한', '리소스가 부족하여 로드가 제한됩니다.');
+        }
+        setModelError(errorMessage);
+      }
+    } finally {
+      if (mountedRef.current) setModelBusyKey(undefined);
+    }
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -145,6 +204,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
       const response = await api.chat(
         token, transcript, undefined, voiceId, voiceReplyEnabled, casualMode, persona, internetEnabled, thinkingMode,
         reasoningEffort,
+        modelKey,
       );
       if (!mountedRef.current) return;
       setStatus('답변이 준비됐어요.');
@@ -184,6 +244,19 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
           onPress={() => void toggleRecording()}
           recording={recorder.isRecording}
         />
+        <Pressable
+          accessibilityHint="다운로드된 대화 모델 목록을 엽니다"
+          accessibilityLabel={`현재 모델 ${activeModelLabel}`}
+          accessibilityRole="button"
+          onPress={openModelMenu}
+          style={({ pressed }) => [styles.currentModel, pressed && styles.currentModelPressed]}
+        >
+          <View style={styles.currentModelCopy}>
+            <Text style={styles.currentModelCaption}>현재 모델</Text>
+            <Text numberOfLines={1} style={styles.currentModelValue}>{activeModelLabel}</Text>
+          </View>
+          <Text style={styles.currentModelAction}>선택</Text>
+        </Pressable>
         {processing && <ActivityIndicator color={colors.primary} style={styles.spinner} />}
         <Text style={styles.status}>{status}</Text>
       </View>
@@ -250,6 +323,50 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
         </View>
       </Pressable>
     </Modal>
+    <Modal animationType="fade" onRequestClose={() => setModelMenuOpen(false)} transparent visible={modelMenuOpen}>
+      <Pressable accessibilityLabel="모델 선택 닫기" onPress={() => setModelMenuOpen(false)} style={styles.modelOverlay}>
+        <Pressable accessibilityRole="menu" onPress={(event) => event.stopPropagation()} style={styles.modelSheet}>
+          <View style={styles.modelSheetHeader}>
+            <View style={styles.modelSheetHeaderCopy}>
+              <Text style={styles.modelSheetTitle}>대화 모델 선택</Text>
+              <Text style={styles.modelSheetDescription}>선택하면 페르소나가 ‘없음’으로 전환됩니다.</Text>
+            </View>
+            <Pressable accessibilityLabel="모델 선택 닫기" onPress={() => setModelMenuOpen(false)} style={styles.modelClose}>
+              <Text style={styles.modelCloseText}>×</Text>
+            </Pressable>
+          </View>
+          {modelsLoading && !localModels.length ? (
+            <View style={styles.modelLoading}><ActivityIndicator color={colors.primary} /><Text style={styles.modelLoadingText}>모델을 확인하고 있어요…</Text></View>
+          ) : (
+            <ScrollView style={styles.modelList} showsVerticalScrollIndicator={false}>
+              {!localModels.length && <Text style={styles.modelEmpty}>선택할 수 있는 다운로드된 LLM이 없습니다.{`\n`}설정에서 모델을 먼저 다운로드해 주세요.</Text>}
+              {localModels.map((model) => {
+                const selected = persona === 'none' && model.key === modelKey;
+                const loaded = !!model.loaded_instances?.length;
+                const busy = modelBusyKey === model.key;
+                return (
+                  <Pressable
+                    accessibilityRole="menuitem"
+                    disabled={!!modelBusyKey}
+                    key={model.key}
+                    onPress={() => void selectModel(model)}
+                    style={({ pressed }) => [styles.modelOption, selected && styles.modelOptionSelected, pressed && styles.modelOptionPressed]}
+                  >
+                    <View style={styles.modelOptionCopy}>
+                      <Text numberOfLines={1} style={[styles.modelOptionTitle, selected && styles.modelOptionTitleSelected]}>{model.display_name || model.key}</Text>
+                      <Text numberOfLines={1} style={styles.modelOptionDetail}>{loaded ? '로드됨 · 바로 선택 가능' : '선택 시 40K로 로드'}{model.quantization ? ` · ${model.quantization}` : ''}</Text>
+                    </View>
+                    {busy ? <ActivityIndicator color={colors.primary} /> : <Text style={[styles.modelOptionState, selected && styles.modelOptionStateSelected]}>{selected ? '사용 중' : loaded ? '선택' : '로드'}</Text>}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          )}
+          {!!modelError && <Text style={styles.modelError}>{modelError}</Text>}
+          <Text style={styles.modelHint}>모델 다운로드와 삭제는 설정 › 직접 모델 관리에서 할 수 있습니다.</Text>
+        </Pressable>
+      </Pressable>
+    </Modal>
   </>);
 }
 
@@ -285,6 +402,12 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   logoutTitle: { color: colors.danger, fontSize: 12, fontWeight: '900' },
   orbArea: { alignItems: 'center', marginTop: 34 },
   spinner: { position: 'absolute', top: 106 },
+  currentModel: { width: '100%', maxWidth: 330, minHeight: 58, marginTop: -22, marginBottom: 13, paddingHorizontal: 15, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: 17, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, shadowColor: '#251832', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.1, shadowRadius: 13, elevation: 4 },
+  currentModelPressed: { borderColor: colors.primary, transform: [{ scale: 0.99 }] },
+  currentModelCopy: { flex: 1, minWidth: 0 },
+  currentModelCaption: { color: colors.muted, fontSize: 10, fontWeight: '800', marginBottom: 3 },
+  currentModelValue: { color: colors.ink, fontSize: 13, fontWeight: '900' },
+  currentModelAction: { color: colors.primaryDark, fontSize: 11, fontWeight: '900' },
   status: { color: colors.muted, textAlign: 'center', fontSize: 13, marginTop: 4, minHeight: 38, maxWidth: 300, lineHeight: 19 },
   transcriptCard: { backgroundColor: colors.primarySoft, borderRadius: 22, padding: 18, marginTop: 15, borderWidth: 1, borderColor: colors.lilac },
   liveRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 9 },
@@ -299,7 +422,6 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   dropdownButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 15, backgroundColor: colors.surface, paddingHorizontal: 13 },
   dropdownButtonOpen: { borderColor: colors.primary },
   dropdownValue: { flex: 1, color: colors.ink, fontSize: 12, fontWeight: '800' },
-  dropdownChevron: { color: colors.primaryDark, fontSize: 16, fontWeight: '900' },
   dropdownMenu: { marginTop: 6, zIndex: 40, elevation: 12, borderRadius: 15, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: 5, shadowColor: '#2E2438', shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.16, shadowRadius: 14 },
   dropdownScroll: { maxHeight: 220 },
   dropdownOption: { minHeight: 48, justifyContent: 'center', borderRadius: 11, paddingHorizontal: 10, paddingVertical: 7 },
@@ -307,4 +429,27 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   dropdownOptionText: { color: colors.ink, fontSize: 12, fontWeight: '700' },
   dropdownOptionTextActive: { color: colors.primaryDark, fontWeight: '900' },
   dropdownOptionDetail: { color: colors.muted, fontSize: 9, marginTop: 3 },
+  modelOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', backgroundColor: 'rgba(16, 11, 23, 0.58)' },
+  modelSheet: { width: '100%', maxWidth: 560, maxHeight: '72%', gap: 14, borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, borderBottomWidth: 0, borderColor: colors.border, backgroundColor: colors.surface, padding: 20, paddingBottom: 26 },
+  modelSheetHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  modelSheetHeaderCopy: { flex: 1 },
+  modelSheetTitle: { color: colors.ink, fontSize: 19, fontWeight: '900' },
+  modelSheetDescription: { color: colors.muted, fontSize: 11, lineHeight: 17, marginTop: 4 },
+  modelClose: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: colors.subtle },
+  modelCloseText: { color: colors.ink, fontSize: 23, lineHeight: 25 },
+  modelLoading: { minHeight: 120, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  modelLoadingText: { color: colors.muted, fontSize: 12 },
+  modelList: { maxHeight: 360 },
+  modelEmpty: { color: colors.muted, fontSize: 13, lineHeight: 21, textAlign: 'center', paddingHorizontal: 20, paddingVertical: 32 },
+  modelOption: { minHeight: 68, marginBottom: 9, paddingHorizontal: 14, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 15, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background },
+  modelOptionSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  modelOptionPressed: { opacity: 0.76 },
+  modelOptionCopy: { flex: 1, minWidth: 0 },
+  modelOptionTitle: { color: colors.ink, fontSize: 13, fontWeight: '800' },
+  modelOptionTitleSelected: { color: colors.primaryDark },
+  modelOptionDetail: { color: colors.muted, fontSize: 10, marginTop: 5 },
+  modelOptionState: { color: colors.primaryDark, fontSize: 11, fontWeight: '900' },
+  modelOptionStateSelected: { color: colors.primary },
+  modelError: { color: colors.danger, fontSize: 11, lineHeight: 17, paddingHorizontal: 2 },
+  modelHint: { color: colors.muted, fontSize: 10, lineHeight: 16, textAlign: 'center' },
 });

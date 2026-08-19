@@ -48,6 +48,8 @@ from .services.document_engine import DocumentExtractionError
 from .services.archive_cleanup import run_immediate_archive_cleanup
 from .services.memory_engine import MemoryCandidate
 from .services.pipeline import PipelineUnavailable
+from .services.model_manager import ModelManagerConflict, ModelManagerError
+from .services.web_search import WebSource
 
 
 router = APIRouter(prefix="/v1")
@@ -62,11 +64,14 @@ DISALLOWED_NAME_BIDI = {
 async def model_capabilities(
     request: Request,
     persona: str = "default",
+    model_key: str | None = None,
     _user: CurrentUser = Depends(get_current_user),
 ):
     if persona not in {"default", "emotional_companion", "none"}:
         raise HTTPException(status_code=422, detail="Unsupported persona")
-    model = request.app.state.pipeline.model_for_persona(persona)
+    if model_key and persona != "none":
+        raise HTTPException(status_code=422, detail="직접 선택 모델은 페르소나 없음에서만 사용할 수 있습니다.")
+    model = model_key or request.app.state.pipeline.model_for_persona(persona)
     return await request.app.state.pipeline.reasoning_capabilities(model)
 
 
@@ -185,6 +190,21 @@ def fallback_session_memory(history_rows) -> MemoryCandidate | None:
         if len(content) >= 2:
             return MemoryCandidate("fact", content, 0.9, 0.82)
     return None
+
+
+def append_web_sources(answer: str, sources: list[WebSource]) -> str:
+    """Persist a model-independent source list with web-grounded answers."""
+    if not sources:
+        return answer
+    lines = ["### 검색 출처"]
+    seen: set[str] = set()
+    for source in sources[:4]:
+        if source.url in seen:
+            continue
+        seen.add(source.url)
+        title = source.title.replace("[", "(").replace("]", ")").strip() or source.url
+        lines.append(f"- [{title}]({source.url})")
+    return answer.rstrip() + "\n\n" + "\n".join(lines)
 
 # 메모리 응답(참조)
 def memory_response(row) -> MemoryResponse:
@@ -584,6 +604,15 @@ async def _create_chat_response(
     user: CurrentUser,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatResponse:
+    if payload.model_key and payload.persona != "none":
+        raise HTTPException(status_code=422, detail="직접 선택 모델은 페르소나 없음에서만 사용할 수 있습니다.")
+    if payload.model_key:
+        try:
+            await request.app.state.model_manager.ensure_loaded(payload.model_key)
+        except ModelManagerConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ModelManagerError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     db = request.app.state.db
     engine = request.app.state.memory_engine
     pipeline = request.app.state.pipeline
@@ -612,6 +641,7 @@ async def _create_chat_response(
         memory_engine=engine,
         document_engine=request.app.state.document_engine,
         web_search_engine=request.app.state.web_search_engine,
+        model_override=payload.model_key if payload.persona == "none" else None,
     )
     memories = agent_context.memories
     document_context = agent_context.document_context
@@ -624,12 +654,14 @@ async def _create_chat_response(
             web_context=web_context,
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
+            model_override=payload.model_key if payload.persona == "none" else None,
             max_answer_chars=200 if payload.speak else None,
             on_delta=on_delta,
         )
     except PipelineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     audio_url = await pipeline.synthesize(answer, payload.voice_id) if payload.speak else None
+    answer = append_web_sources(answer, agent_context.web_sources)
     try:
         conversation = db.save_conversation(
             user.id, session["id"], payload.text, answer,
@@ -644,39 +676,66 @@ async def _create_chat_response(
         user.id, session["id"], session_working_context(working_rows), len(working_rows),
         expected_auth_version=user.auth_version,
     )
-    promotion_requested = session_memory_promotion_requested(payload.text, history_rows)
-    note_source, note_title = direct_user_note(payload.text) if promotion_requested else ("", "")
-    if note_source:
-        candidates = engine.extract_rule_candidates(note_source)
-        promoted = await pipeline.summarize_user_note(
-            note_source, note_title, persona=payload.persona
-        )
-        promoted = [candidate for candidate in promoted if note_matches_source(candidate, note_source)]
-        if not promoted:
-            prefix = f"{note_title}: " if note_title else ""
-            promoted = [MemoryCandidate("fact", (prefix + note_source)[:1000], 0.96, 0.9)]
-        candidates.extend(promoted)
-    elif promotion_requested and session_context:
-        candidates = engine.extract_rule_candidates(payload.text)
-        promoted = await pipeline.extract_session_memories(
-            session_context, payload.text, persona=payload.persona
-        )
-        if not promoted:
-            fallback = fallback_session_memory(history_rows)
-            promoted = [fallback] if fallback is not None else []
-        candidates.extend(promoted)
-    else:
-        candidates = engine.extract_rule_candidates(payload.text)
-        candidates.extend(await pipeline.extract_memories(payload.text, persona=payload.persona))
-    require_write_fence(request, user)
-    try:
-        engine.remember_many(
-            user.id, session["id"], candidates,
-            expected_auth_version=user.auth_version,
-        )
-    except AccountAccessFenceError as exc:
-        require_write_fence(request, user)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    async def postprocess_memories() -> None:
+        """Extract long-term memories without holding the completed chat stream open."""
+        try:
+            promotion_requested = session_memory_promotion_requested(payload.text, history_rows)
+            note_source, note_title = direct_user_note(payload.text) if promotion_requested else ("", "")
+            if note_source:
+                candidates = engine.extract_rule_candidates(note_source)
+                promoted = await pipeline.summarize_user_note(
+                    note_source, note_title, persona=payload.persona
+                )
+                promoted = [
+                    candidate for candidate in promoted
+                    if note_matches_source(candidate, note_source)
+                ]
+                if not promoted:
+                    prefix = f"{note_title}: " if note_title else ""
+                    promoted = [MemoryCandidate(
+                        "fact", (prefix + note_source)[:1000], 0.96, 0.9,
+                    )]
+                candidates.extend(promoted)
+            elif promotion_requested and session_context:
+                candidates = engine.extract_rule_candidates(payload.text)
+                promoted = await pipeline.extract_session_memories(
+                    session_context, payload.text, persona=payload.persona
+                )
+                if not promoted:
+                    fallback = fallback_session_memory(history_rows)
+                    promoted = [fallback] if fallback is not None else []
+                candidates.extend(promoted)
+            else:
+                candidates = engine.extract_rule_candidates(payload.text)
+                candidates.extend(await pipeline.extract_memories(
+                    payload.text, persona=payload.persona,
+                ))
+            if not db.is_account_fence_valid(user.id, user.auth_version):
+                logger.info(
+                    "Skipping chat memory postprocessing after account fence changed: user=%s",
+                    user.id,
+                )
+                return
+            engine.remember_many(
+                user.id, session["id"], candidates,
+                expected_auth_version=user.auth_version,
+            )
+        except AccountAccessFenceError:
+            logger.info(
+                "Skipping chat memory postprocessing after account fence changed: user=%s",
+                user.id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Chat memory postprocessing failed: user=%s session=%s",
+                user.id, session["id"],
+            )
+
+    postprocess_task = asyncio.create_task(postprocess_memories())
+    request.app.state.chat_postprocess_tasks.add(postprocess_task)
+    postprocess_task.add_done_callback(request.app.state.chat_postprocess_tasks.discard)
     session = db.get_session(user.id, session["id"])
     return ChatResponse(
         session=session_response(session),
@@ -755,6 +814,15 @@ async def regenerate_message(
     message_id: str, payload: RegenerateRequest, request: Request,
     user: CurrentUser = Depends(get_current_user),
 ):
+    if payload.model_key and payload.persona != "none":
+        raise HTTPException(status_code=422, detail="직접 선택 모델은 페르소나 없음에서만 사용할 수 있습니다.")
+    if payload.model_key:
+        try:
+            await request.app.state.model_manager.ensure_loaded(payload.model_key)
+        except ModelManagerConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ModelManagerError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     db, pipeline = request.app.state.db, request.app.state.pipeline
     conversation = db.get_conversation(user.id, message_id)
     if conversation is None:
@@ -779,6 +847,7 @@ async def regenerate_message(
         memory_engine=request.app.state.memory_engine,
         document_engine=request.app.state.document_engine,
         web_search_engine=request.app.state.web_search_engine,
+        model_override=payload.model_key if payload.persona == "none" else None,
     )
     memories = agent_context.memories
     document_context = agent_context.document_context
@@ -791,11 +860,13 @@ async def regenerate_message(
             web_context=web_context,
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
+            model_override=payload.model_key if payload.persona == "none" else None,
             max_answer_chars=200 if payload.speak else None,
         )
     except PipelineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     audio_url = await pipeline.synthesize(answer, payload.voice_id) if payload.speak else None
+    answer = append_web_sources(answer, agent_context.web_sources)
     try:
         updated = db.update_conversation_response(
             user.id, message_id, answer, audio_url,

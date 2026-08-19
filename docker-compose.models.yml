@@ -28,6 +28,18 @@ services:
     networks:
       - memorypal_data
 
+  monitor-stt:
+    image: memorypal-monitor:local
+    restart: unless-stopped
+    pid: "service:stt"
+    network_mode: "service:stt"
+    depends_on:
+      stt:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set MEMORYPAL_MODEL_SERVICE_TOKEN in the Docker env file}
+    command: ["--service", "stt", "--host", "0.0.0.0", "--port", "8100", "--target-pid", "1", "--health-url", "http://127.0.0.1:8001/health", "--log-path", "/logs/stt.hardware.jsonl"]
+
   tts:
     image: memorypal-tts:local
     build:
@@ -64,6 +76,18 @@ services:
       start_period: 30m
     networks:
       - memorypal_data
+
+  monitor-tts:
+    image: memorypal-monitor:local
+    restart: unless-stopped
+    pid: "service:tts"
+    network_mode: "service:tts"
+    depends_on:
+      tts:
+        condition: service_healthy
+    environment:
+      MEMORYPAL_MODEL_SERVICE_TOKEN: ${MEMORYPAL_MODEL_SERVICE_TOKEN:?Set MEMORYPAL_MODEL_SERVICE_TOKEN in the Docker env file}
+    command: ["--service", "tts", "--host", "0.0.0.0", "--port", "8102", "--target-pid", "1", "--health-url", "http://127.0.0.1:8003/health", "--log-path", "/logs/tts.hardware.jsonl"]
 
   gateway:
     environment:

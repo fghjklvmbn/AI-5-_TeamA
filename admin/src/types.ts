@@ -95,3 +95,41 @@ export type ListResult<T> = {
   total: number;
   next_cursor?: string | null;
 };
+
+export type ServiceHealth = 'green' | 'yellow' | 'red';
+
+export type HardwareMetric = {
+  service: 'stt' | 'llm' | 'tts' | 'gateway' | 'archive';
+  status: ServiceHealth;
+  reason: string;
+  sampled_at: string;
+  service_online: boolean;
+  process_count?: number;
+  response_latency_ms: number | null;
+  latency_baseline_ms: number | null;
+  cpu: { process_percent: number };
+  ram: {
+    total_bytes: number;
+    available_bytes: number;
+    used_percent: number;
+    process_rss_bytes: number;
+    process_percent: number;
+  };
+  gpu: null | {
+    names: string[];
+    count: number;
+    cuda_utilization_percent: number;
+    memory_controller_utilization_percent: number;
+    vram_total_bytes: number;
+    vram_used_bytes: number;
+    vram_free_bytes: number;
+    vram_used_percent: number;
+  };
+};
+
+export type HardwareMonitorResponse = {
+  generated_at: string;
+  interval_seconds: number;
+  services: HardwareMetric[];
+  history: HardwareMetric[];
+};

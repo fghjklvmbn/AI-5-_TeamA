@@ -21,6 +21,10 @@ def test_web_search_builds_source_context_without_persistence():
     assert "MemoryPal 공식 소식" in context
     assert "https://example.com/news" in context
 
+    result = asyncio.run(engine.search("최신 소식", []))
+    assert result.sources[0].title == "MemoryPal 공식 소식"
+    assert result.sources[0].url == "https://example.com/news"
+
 
 def test_short_follow_up_includes_previous_user_topic():
     engine = WebSearchEngine(search=lambda *_args, **_kwargs: [])
