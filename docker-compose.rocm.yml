@@ -1,0 +1,34 @@
+services:
+  stt:
+    build:
+      args:
+        MODEL_BASE_IMAGE: ${MEMORYPAL_ROCM_PYTORCH_IMAGE:-rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0}
+        TORCH_INDEX_URL: ""
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    ipc: host
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      MEMORYPAL_STT_DEVICE: rocm
+
+  tts:
+    build:
+      args:
+        MODEL_BASE_IMAGE: ${MEMORYPAL_ROCM_PYTORCH_IMAGE:-rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0}
+        TORCH_INDEX_URL: ""
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    ipc: host
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      MEMORYPAL_TTS_DEVICE: rocm
+      MEMORYPAL_TTS_ENGINE: upstream
+      MEMORYPAL_TTS_DTYPE: ${MEMORYPAL_TTS_DTYPE:-float16}

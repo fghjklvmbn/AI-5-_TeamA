@@ -1,0 +1,7 @@
+-- Copy to the next zero-padded version, for example 0003_add_job_index.sql.
+-- Never edit an already-applied migration; add a forward-only migration.
+-- The Compose runner wraps the migration and checksum ledger insert in one
+-- transaction, so migration files must not contain BEGIN or COMMIT.
+
+-- SQL changes go here. Prefer schema-qualified object names and online-safe
+-- index/constraint rollout plans for large existing tables.

@@ -4,6 +4,7 @@
 **/.env.*
 !**/.env.example
 !**/.env.production.example
+!**/.env.scale.example
 **/__pycache__/
 **/.pytest_cache/
 **/.venv/
@@ -14,18 +15,26 @@
 backend/gateway/data/
 backend/STT_backend_server/uploads/
 backend/TTS_Server/outputs/
+backend/TTS_Server/reference_cache/
 backend/archive_service/voice_uploads/
-backend/archive_service/private_voice_uploads/8957a86a-962c-5f13-94a4-55887874b80d.webm
+backend/archive_service/private_voice_uploads/
 backend.zip
 
 # Expo / Node
 frontend/node_modules/
 frontend/.expo/
 frontend/dist/
+frontend/dist-main/
+frontend/dist-project3/
 frontend/.expo-test-dist/
 frontend/.expo-web.*.log
 frontend/.static-web.*.log
 frontend/.static-proxy.*.log
+admin/node_modules/
+admin/dist/
+admin/dist-main/
+admin/dist-project3/
+admin/*.tsbuildinfo
 npm-debug.log*
 .runtime/
 .worktrees/
@@ -33,4 +42,3 @@ npm-debug.log*
 # Editors and operating systems
 .DS_Store
 Thumbs.db
-

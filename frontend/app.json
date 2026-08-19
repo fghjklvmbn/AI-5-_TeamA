@@ -40,9 +40,6 @@
     },
     "web": {
       "bundler": "metro"
-    },
-    "experiments": {
-      "baseUrl": "/api_memoripal/main"
     }
   }
 }

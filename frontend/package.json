@@ -8,10 +8,14 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "build:web": "expo export --clear --platform web --output-dir dist",
-    "serve:web": "python -m http.server 7860 --directory dist",
-    "serve:web:proxy": "python -m http.server 8081 --directory dist",
-    "typecheck": "tsc --noEmit"
+    "build:web": "node scripts/build-profile.mjs main",
+    "build:web:project3": "node scripts/build-profile.mjs project3",
+    "serve:web": "python ../scripts/static_server.py --directory dist-main --host 0.0.0.0 --port 8081 --prefix /api_memoripal/main",
+    "serve:web:project3": "python ../scripts/static_server.py --directory dist-project3 --host 0.0.0.0 --port 8083 --prefix /api_memoripal/project3/main",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.mjs",
+    "test:unit": "jest --config jest.config.cjs",
+    "test:coverage": "jest --config jest.config.cjs --coverage"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -30,8 +34,10 @@
     "react-native-web": "~0.21.0"
   },
   "devDependencies": {
+    "@testing-library/jest-native": "^5.4.3",
     "@types/react": "~19.2.0",
     "dotenv": "^17.4.2",
+    "jest": "^29.7.0",
     "typescript": "~6.0.3"
   }
 }

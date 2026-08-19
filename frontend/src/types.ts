@@ -59,10 +59,67 @@ export type Attachment = {
   created_at: string;
 };
 
-export type Persona = 'default' | 'emotional_companion';
+export type Persona = 'default' | 'emotional_companion' | 'none';
 
-export type VoiceStatus = {
-  has_personalized_voice: boolean;
-  personalized_voice_count: number;
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+
+export type ModelReasoningCapabilities = {
+  model: string;
+  available: boolean;
+  thinking_supported: boolean;
+  reasoning_efforts: ReasoningEffort[];
+  default_reasoning?: 'off' | 'on' | ReasoningEffort | null;
+  source: 'lmstudio-native' | 'openai-compatible' | 'unavailable';
 };
 
+export type PortraitStatus = 'empty' | 'queued' | 'analyzing' | 'complete' | 'failed';
+
+export type PortraitResponse = {
+  status: PortraitStatus;
+  title?: string | null;
+  summary?: string | null;
+  accuracy_percent?: number | null;
+  analyzed_sessions?: number;
+  analyzed_messages?: number;
+  progress_percent?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  error?: string | null;
+  persona?: Persona | null;
+  vector_method?: string | null;
+};
+
+export type VoiceStatus = {
+  id: string;
+  voice_id: string;
+  status: 'uploaded' | 'registered' | 'provisional';
+  created_at: string;
+};
+
+// API 타입
+type ApiErrorDetail = {
+  detail?: string;
+  message?: string;
+  loc?: unknown[];
+  msg?: string;
+};
+
+export type ApiErrorMessage = string | (ApiErrorDetail & { loc?: unknown[] })[];
+
+// UI 컴포넌트 Props
+export type DropdownOption = { id: string; label: string; detail?: string };
+
+export interface DropdownFieldProps {
+  label: string;
+  value: string;
+  options: DropdownOption[];
+  onSelect: (id: string) => void;
+}
+
+// Hook 타입
+export type LiveRecorderResult = {
+  recording: boolean;
+  onRecordingStart: () => void;
+  onRecordingEnd: () => void;
+  onStop: () => void;
+};

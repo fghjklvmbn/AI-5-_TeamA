@@ -8,8 +8,6 @@ Set-StrictMode -Version Latest
 
 $Root = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $Runtime = Join-Path $Root ".runtime"
-$DatabasePath = Join-Path $Root "backend\gateway\data\memorypal.db"
-$DatabaseBackup = $null
 
 function Test-InProject([string]$Path) {
     $Resolved = [IO.Path]::GetFullPath($Path).TrimEnd('\')
@@ -26,44 +24,132 @@ function Remove-ProjectPath([string]$Path) {
     Remove-Item -LiteralPath $Resolved -Recurse -Force
 }
 
-function Stop-TrackedProcess([string]$Name) {
+function Test-MemoryPalProcessInfo(
+    [object]$ProcessInfo,
+    [string]$ExpectedCommand,
+    [string]$ExpectedExecutableFragment
+) {
+    $CommandLine = [string]$ProcessInfo.CommandLine
+    $ExecutablePath = [string]$ProcessInfo.ExecutablePath
+    $CommandMatches = (
+        -not [String]::IsNullOrWhiteSpace($ExpectedCommand) -and
+        $CommandLine.IndexOf($ExpectedCommand, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+    if (-not $CommandMatches) { return $false }
+
+    $IsProjectProcess = (
+        $CommandLine.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $ExecutablePath.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+    $ExternalExecutableMatches = (
+        -not [String]::IsNullOrWhiteSpace($ExpectedExecutableFragment) -and
+        $ExecutablePath.IndexOf(
+            $ExpectedExecutableFragment, [StringComparison]::OrdinalIgnoreCase
+        ) -ge 0
+    )
+    return $IsProjectProcess -or $ExternalExecutableMatches
+}
+
+function Stop-ProcessAndVerify(
+    [Diagnostics.Process]$Process,
+    [string]$Label
+) {
+    if ($Process.HasExited) { return }
+    Stop-Process -InputObject $Process -ErrorAction Stop
+    if (-not $Process.WaitForExit(5000)) {
+        Stop-Process -InputObject $Process -Force -ErrorAction Stop
+        if (-not $Process.WaitForExit(5000)) {
+            throw "$Label PID $($Process.Id) did not exit after a forced stop."
+        }
+    }
+    if (-not $Process.HasExited) {
+        throw "$Label PID $($Process.Id) is still running after stop."
+    }
+}
+
+function Stop-TrackedProcess(
+    [string]$Name,
+    [string]$ExpectedCommand,
+    [string]$ExpectedExecutableFragment = ""
+) {
     $PidFile = Join-Path $Runtime "$Name.pid"
     if (-not (Test-Path -LiteralPath $PidFile)) { return }
     $ProcessId = 0
     if (-not [int]::TryParse(([IO.File]::ReadAllText($PidFile).Trim()), [ref]$ProcessId)) {
-        Remove-Item -LiteralPath $PidFile -Force
-        return
+        throw "$Name has an invalid PID file; uninstall stopped without deleting runtime state."
     }
-    $ProcessInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    $AllProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $ProcessInfo = $AllProcesses |
+        Where-Object { $_.ProcessId -eq $ProcessId } |
+        Select-Object -First 1
     if ($null -eq $ProcessInfo) {
         Remove-Item -LiteralPath $PidFile -Force
         return
     }
-    $CommandLine = [string]$ProcessInfo.CommandLine
-    if ($CommandLine.IndexOf($Root, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
-        Write-Warning "$Name PID $ProcessId 는 현재 프로젝트 프로세스로 확인되지 않아 종료하지 않습니다."
-        return
+    if (-not (Test-MemoryPalProcessInfo `
+        $ProcessInfo $ExpectedCommand $ExpectedExecutableFragment
+    )) {
+        throw "$Name PID $ProcessId is not the expected MemoryPal process. Uninstall stopped without deleting runtime state."
     }
-    Stop-Process -Id $ProcessId -Force
+
+    $Tree = New-Object 'Collections.Generic.List[object]'
+    $Pending = New-Object 'Collections.Generic.Queue[int]'
+    $Pending.Enqueue($ProcessId)
+    while ($Pending.Count -gt 0) {
+        $ParentId = $Pending.Dequeue()
+        $Current = $AllProcesses |
+            Where-Object { $_.ProcessId -eq $ParentId } |
+            Select-Object -First 1
+        if ($null -eq $Current) { continue }
+        $Tree.Add($Current)
+        foreach ($Child in ($AllProcesses | Where-Object { $_.ParentProcessId -eq $ParentId })) {
+            $Pending.Enqueue([int]$Child.ProcessId)
+        }
+    }
+    foreach ($Item in $Tree) {
+        if (-not (Test-MemoryPalProcessInfo `
+            $Item $ExpectedCommand $ExpectedExecutableFragment
+        )) {
+            throw "$Name child PID $($Item.ProcessId) is not an expected MemoryPal process."
+        }
+    }
+    $StopOrder = $Tree.ToArray()
+    [array]::Reverse($StopOrder)
+    foreach ($Item in $StopOrder) {
+        $Process = Get-Process -Id $Item.ProcessId -ErrorAction SilentlyContinue
+        if ($null -eq $Process) { continue }
+        Stop-ProcessAndVerify $Process $Name
+    }
+    Remove-Item -LiteralPath $PidFile -Force -ErrorAction Stop
     Write-Host "$Name 프로세스를 종료했습니다. (PID $ProcessId)"
 }
 
 try {
     Write-Host "MemoryPal 설치 파일과 캐시를 정리합니다." -ForegroundColor Cyan
-    Stop-TrackedProcess "gateway"
-    Stop-TrackedProcess "frontend"
-
-    if (-not $RemoveData -and (Test-Path -LiteralPath $DatabasePath)) {
-        $DatabaseBackup = Join-Path ([IO.Path]::GetTempPath()) "memorypal-$([guid]::NewGuid()).db"
-        Copy-Item -LiteralPath $DatabasePath -Destination $DatabaseBackup -Force
-    }
+    Stop-TrackedProcess "admin" "admin\server.mjs"
+    Stop-TrackedProcess "frontend" "static_server.py"
+    Stop-TrackedProcess "admin-project3" "admin\server.mjs"
+    Stop-TrackedProcess "frontend-project3" "static_server.py"
+    Stop-TrackedProcess "portrait-worker" "portrait_worker.py"
+    Stop-TrackedProcess "gateway" "gateway_server.py"
+    Stop-TrackedProcess "gateway-project3" "gateway_server.py"
+    Stop-TrackedProcess "archive" "--port 8004" "\archive\python.exe"
+    Stop-TrackedProcess "archive-project3" "--port 8006" "\archive\python.exe"
+    Stop-TrackedProcess "tts" "--port 8003" "\qwen3-tts\python.exe"
+    Stop-TrackedProcess "stt" "--port 8001" "\STT\python.exe"
 
     # Remove large dependency/build directories first so recursive cache discovery stays fast.
     foreach ($Path in @(
         (Join-Path $Root ".venv"),
         (Join-Path $Root "frontend\node_modules"),
         (Join-Path $Root "frontend\dist"),
+        (Join-Path $Root "frontend\dist-main"),
+        (Join-Path $Root "frontend\dist-project3"),
         (Join-Path $Root "frontend\.expo"),
+        (Join-Path $Root "admin\node_modules"),
+        (Join-Path $Root "admin\dist"),
+        (Join-Path $Root "admin\dist-main"),
+        (Join-Path $Root "admin\dist-project3"),
         (Join-Path $Root ".pytest_cache")
     )) {
         Remove-ProjectPath $Path
@@ -91,22 +177,25 @@ try {
         foreach ($Path in @(
             (Join-Path $Root "backend\gateway\data"),
             (Join-Path $Root "backend\archive_service\voice_uploads"),
+            (Join-Path $Root "backend\archive_service\private_voice_uploads"),
             (Join-Path $Root "backend\TTS_Server\outputs")
         )) {
             Remove-ProjectPath $Path
         }
     } else {
-        if ($DatabaseBackup -and -not (Test-Path -LiteralPath $DatabasePath)) {
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DatabasePath) | Out-Null
-            Copy-Item -LiteralPath $DatabaseBackup -Destination $DatabasePath -Force
-        }
-        if ($DatabaseBackup -and (Test-Path -LiteralPath $DatabaseBackup)) {
-            Remove-Item -LiteralPath $DatabaseBackup -Force
-        }
         Write-Host "Gateway SQLite DB, 업로드 파일, 루트 .env 설정은 보존했습니다." -ForegroundColor Green
     }
 
-    Remove-ProjectPath $Runtime
+    if ($RemoveData) {
+        Remove-ProjectPath $Runtime
+    } else {
+        Remove-ProjectPath (Join-Path $Runtime "logs")
+        if (Test-Path -LiteralPath $Runtime) {
+            Get-ChildItem -LiteralPath $Runtime -Filter "*.pid" -File -ErrorAction SilentlyContinue |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+        }
+        Write-Host "Runtime secrets were preserved with the local database." -ForegroundColor Green
+    }
     Write-Host "`n정리가 완료되었습니다." -ForegroundColor Green
     Write-Host "다시 설치하려면 install.cmd를 실행하세요."
     exit 0

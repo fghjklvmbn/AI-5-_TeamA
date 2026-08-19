@@ -1,8 +1,20 @@
 # Deployed public prefix: /api_memoripal.
 # Keep this spelling consistent with the existing DNS server configuration.
 
+# Readiness proves that Gateway and the model services share the same
+# server-only token. It is for LAN orchestration and is never public.
+location = /api_memoripal/gateway/v1/internal/ready {
+    return 404;
+}
+
+location ^~ /api_memoripal/gateway/v1/internal/ {
+    return 404;
+}
+
 location /api_memoripal/gateway/ {
-    proxy_pass http://192.168.2.75:8000/;
+    proxy_pass http://192.168.2.75:8010/;
+    proxy_buffering off;
+    proxy_cache off;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -16,16 +28,42 @@ location /api_memoripal/gateway/ {
     client_max_body_size 20m;
 }
 
-location /api_memoripal/archive/ {
-    proxy_pass http://192.168.2.75:8004/;
+# Only the immutable public audio read path is exposed. All Archive API and
+# upload routes remain LAN-only and require the Gateway-to-Archive token.
+location ^~ /api_memoripal/archive/voice_uploads/ {
+    limit_except GET { deny all; }
+    proxy_pass http://192.168.2.75:8004/voice_uploads/;
     proxy_connect_timeout 300s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
     send_timeout 300s;
 }
 
-location /api_memoripal/stt/ {
+location ^~ /api_memoripal/archive/ {
+    return 404;
+}
+
+location = /api_memoripal/archive {
+    return 404;
+}
+
+# STT/TTS run on the application host. Their compute endpoints still require
+# the server-only Bearer token enforced by each FastAPI service. Preserve the
+# Authorization header when routing through the external Nginx server.
+location = /api_memoripal/stt {
+    return 308 /api_memoripal/stt/;
+}
+
+location ^~ /api_memoripal/stt/ {
     proxy_pass http://192.168.2.75:8001/;
+    proxy_http_version 1.1;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_request_buffering off;
+    proxy_buffering off;
     proxy_connect_timeout 300s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
@@ -33,36 +71,60 @@ location /api_memoripal/stt/ {
     client_max_body_size 20m;
 }
 
-location /api_memoripal/tts/ {
+location = /api_memoripal/tts {
+    return 308 /api_memoripal/tts/;
+}
+
+location ^~ /api_memoripal/tts/outputs/ {
+    limit_except GET { deny all; }
+    proxy_pass http://192.168.2.75:8003/outputs/;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
+}
+
+location ^~ /api_memoripal/tts/ {
     proxy_pass http://192.168.2.75:8003/;
-    proxy_connect_timeout 300s;
-    proxy_send_timeout 300s;
-    proxy_read_timeout 300s;
-    send_timeout 300s;
-}
-
-location /api_memoripal/llm/v1/ {
-    proxy_pass http://192.168.2.41:1234/v1/;
-    proxy_connect_timeout 300s;
-    proxy_send_timeout 300s;
-    proxy_read_timeout 300s;
-    send_timeout 300s;
-}
-
-location /api_memoripal/test_tts/ {
-    proxy_pass http://192.168.2.75:5173/;
     proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Host $proxy_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_cache off;
     proxy_connect_timeout 300s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
     send_timeout 300s;
+    client_max_body_size 20m;
+}
+
+# LLM and the development TTS UI remain separately controlled at the edge.
+location ^~ /api_memoripal/llm/ {
+    return 404;
+}
+
+location = /api_memoripal/llm {
+    return 404;
+}
+
+location ^~ /api_memoripal/test_tts/ {
+    return 404;
+}
+
+location = /api_memoripal/test_tts {
+    return 404;
 }
 
 # Port 8081 serves the Expo production export. This avoids Metro/HMR path
 # conflicts when the app is exposed below /api_memoripal/main/.
-location /api_memoripal/main/ {
+location = /api_memoripal/main {
+    return 308 /api_memoripal/main/;
+}
+
+location ^~ /api_memoripal/main/ {
     proxy_pass http://192.168.2.75:8081/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;

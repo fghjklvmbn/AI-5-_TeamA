@@ -60,6 +60,25 @@ def test_regenerate_updates_only_the_assistant_response(tmp_path):
     assert len(db.get_history(owner["id"], session["id"])) == 1
 
 
+def test_on_demand_audio_updates_only_the_current_answer(tmp_path):
+    db = Database(tmp_path / "memorypal.db"); db.initialize()
+    owner = create_user(db, "owner@example.com"); session = db.create_session(owner["id"])
+    conversation = db.save_conversation(owner["id"], session["id"], "질문", "현재 답변")
+    updated = db.update_conversation_audio_if_current(
+        owner["id"], conversation["id"], "현재 답변", "audio.wav",
+    )
+    assert updated["assistant_text"] == "현재 답변"
+    assert updated["output_audio_path"] == "audio.wav"
+    duplicate = db.update_conversation_audio_if_current(
+        owner["id"], conversation["id"], "현재 답변", "duplicate.wav",
+    )
+    assert duplicate["output_audio_path"] == "audio.wav"
+    db.update_conversation_response(owner["id"], conversation["id"], "새 답변", None)
+    assert db.update_conversation_audio_if_current(
+        owner["id"], conversation["id"], "현재 답변", "stale.wav",
+    ) is None
+
+
 def test_session_working_memory_is_scoped_and_deleted_with_session(tmp_path):
     db = Database(tmp_path / "memorypal.db"); db.initialize()
     owner = create_user(db, "owner@example.com"); other = create_user(db, "other@example.com")

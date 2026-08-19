@@ -1,13 +1,15 @@
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE SCHEMA IF NOT EXISTS memorypal_archive;
+SET search_path TO memorypal_archive, public;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 
 --------------------------------------------------
 -- sessions
 --------------------------------------------------
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     user_id UUID,
 
@@ -24,10 +26,10 @@ CREATE TABLE sessions (
 -- voice_profiles
 --------------------------------------------------
 
-CREATE TABLE voice_profiles (
+CREATE TABLE IF NOT EXISTS voice_profiles (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     voice_name VARCHAR(255)
     NOT NULL,
@@ -40,6 +42,20 @@ CREATE TABLE voice_profiles (
 
     description TEXT,
 
+    owner_ref VARCHAR(64),
+
+    registration_token_hash VARCHAR(64)
+    UNIQUE,
+
+    registration_state VARCHAR(16)
+    NOT NULL
+    DEFAULT 'active'
+    CHECK (registration_state IN ('pending', 'active')),
+
+    expires_at TIMESTAMPTZ,
+
+    legacy_source_path TEXT,
+
     created_at TIMESTAMP
     NOT NULL
     DEFAULT CURRENT_TIMESTAMP
@@ -50,10 +66,10 @@ CREATE TABLE voice_profiles (
 -- conversations
 --------------------------------------------------
 
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS conversations (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     session_id UUID
     NOT NULL,
@@ -90,10 +106,10 @@ CREATE TABLE conversations (
 -- memories
 --------------------------------------------------
 
-CREATE TABLE memories (
+CREATE TABLE IF NOT EXISTS memories (
 
     id UUID PRIMARY KEY
-    DEFAULT uuid_generate_v4(),
+    DEFAULT public.uuid_generate_v4(),
 
     session_id UUID
     NOT NULL,
@@ -128,4 +144,12 @@ CREATE TABLE memories (
     REFERENCES sessions(id)
     ON DELETE CASCADE
 
+);
+
+CREATE TABLE IF NOT EXISTS voice_owner_states (
+    owner_ref VARCHAR(64) PRIMARY KEY,
+    state VARCHAR(16) NOT NULL DEFAULT 'active'
+        CHECK (state IN ('active', 'purged')),
+    created_at TIMESTAMPTZ NOT NULL,
+    purged_at TIMESTAMPTZ
 );

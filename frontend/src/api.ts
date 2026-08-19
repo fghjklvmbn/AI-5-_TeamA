@@ -6,14 +6,49 @@ import type {
   ChatResponse,
   MemoryItem,
   Message,
+  ModelReasoningCapabilities,
   Persona,
+  PortraitResponse,
+  ReasoningEffort,
   Session,
   User,
   Voice,
   VoiceStatus,
 } from './types';
 
-const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://127.0.0.1:8000/v1').replace(/\/$/, '');
+const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://127.0.0.1:8010/v1').replace(/\/$/, '');
+
+const AUDIO_EXTENSION_BY_MIME: Record<string, string> = {
+  'audio/aac': 'aac',
+  'audio/flac': 'flac',
+  'audio/mp4': 'm4a',
+  'audio/mpeg': 'mp3',
+  'audio/ogg': 'ogg',
+  'audio/wav': 'wav',
+  'audio/webm': 'webm',
+  'audio/x-m4a': 'm4a',
+  'audio/x-wav': 'wav',
+};
+
+function audioUploadMetadata(uri: string, blobType?: string) {
+  const normalizedBlobType = blobType?.split(';', 1)[0].trim().toLowerCase() ?? '';
+  const mimeExtension = AUDIO_EXTENSION_BY_MIME[normalizedBlobType];
+  const uriExtension = uri.match(/\.([a-z0-9]+)(?:[?#]|$)/i)?.[1].toLowerCase();
+  const knownUriExtension = uriExtension && Object.values(AUDIO_EXTENSION_BY_MIME).includes(uriExtension)
+    ? uriExtension
+    : undefined;
+  const extension = mimeExtension ?? knownUriExtension ?? (Platform.OS === 'web' ? 'webm' : 'm4a');
+  const mime = normalizedBlobType || (
+    extension === 'webm' ? 'audio/webm'
+      : extension === 'wav' ? 'audio/wav'
+        : extension === 'mp3' ? 'audio/mpeg'
+          : extension === 'ogg' ? 'audio/ogg'
+            : extension === 'flac' ? 'audio/flac'
+              : extension === 'aac' ? 'audio/aac'
+                : 'audio/mp4'
+  );
+  return { extension, mime };
+}
 
 function errorMessage(detail: unknown, fallback: string): string {
   if (typeof detail === 'string' && detail.trim()) return detail;
@@ -37,7 +72,39 @@ function errorMessage(detail: unknown, fallback: string): string {
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
     super(message);
+    this.name = 'ApiError';
   }
+}
+
+type UnauthorizedHandler = (token: string) => void;
+
+let unauthorizedHandler: UnauthorizedHandler | undefined;
+
+/** Register the auth boundary that invalidates the matching local session on any authenticated 401. */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler): () => void {
+  unauthorizedHandler = handler;
+  return () => {
+    if (unauthorizedHandler === handler) unauthorizedHandler = undefined;
+  };
+}
+
+async function throwStreamingResponseError(response: Response, token: string): Promise<never> {
+  const fallback = '요청을 처리하지 못했어요.';
+  let message = fallback;
+  try {
+    const data = await response.json();
+    message = errorMessage(data.detail, fallback);
+  } catch {
+    // Keep the friendly fallback when a proxy returns a non-JSON error page.
+  }
+  if (response.status === 401) {
+    try {
+      unauthorizedHandler?.(token);
+    } catch {
+      // An auth-state listener must never hide the API error from the caller.
+    }
+  }
+  throw new ApiError(message, response.status);
 }
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
@@ -54,11 +121,94 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string):
     } catch {
       // Keep the friendly fallback when a proxy returns a non-JSON error page.
     }
+    if (response.status === 401 && token) {
+      try {
+        unauthorizedHandler?.(token);
+      } catch {
+        // An auth-state listener must never hide the API error from the caller.
+      }
+    }
     throw new ApiError(message, response.status);
   }
   if (response.status === 204) return undefined as T;
   const data = await response.json() as T;
   return data;
+}
+
+type ChatStreamEvent = {
+  type?: unknown;
+  delta?: unknown;
+  detail?: unknown;
+  status?: unknown;
+  response?: unknown;
+};
+
+async function streamingChatRequest(
+  token: string,
+  payload: Record<string, unknown>,
+  onDelta: (delta: string) => void,
+): Promise<ChatResponse> {
+  const response = await fetch(`${API_URL}/chat/messages/stream`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/x-ndjson',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) return throwStreamingResponseError(response, token);
+
+  let completed: ChatResponse | undefined;
+  const processLine = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as ChatStreamEvent;
+    if (event.type === 'delta' && typeof event.delta === 'string') {
+      onDelta(event.delta);
+      return;
+    }
+    if (event.type === 'complete' && event.response && typeof event.response === 'object') {
+      completed = event.response as ChatResponse;
+      return;
+    }
+    if (event.type === 'error') {
+      const status = typeof event.status === 'number' ? event.status : 500;
+      throw new ApiError(errorMessage(event.detail, '답변을 생성하지 못했어요.'), status);
+    }
+  };
+
+  const streamBody = response.body as unknown as {
+    getReader?: () => {
+      read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+      releaseLock?: () => void;
+    };
+  } | null;
+  if (streamBody?.getReader && typeof TextDecoder !== 'undefined') {
+    const reader = streamBody.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        lines.forEach(processLine);
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) processLine(buffer);
+    } finally {
+      reader.releaseLock?.();
+    }
+  } else {
+    // Some native fetch implementations do not expose a readable body. They still
+    // receive the same response correctly, but apply its events after buffering.
+    (await response.text()).split(/\r?\n/).forEach(processLine);
+  }
+
+  if (!completed) throw new ApiError('스트리밍 응답이 완료되기 전에 연결이 종료됐어요.', 502);
+  return completed;
 }
 
 export const api = {
@@ -74,14 +224,41 @@ export const api = {
       body: JSON.stringify({ email, password }),
     });
   },
-  me(token: string) {
-    return request<User>('/auth/me', {}, token);
+  me(token: string, signal?: AbortSignal) {
+    return request<User>('/auth/me', { signal }, token);
   },
-  logout(token: string) {
-    return request<void>('/auth/logout', { method: 'POST' }, token);
+  logout(token: string, signal?: AbortSignal) {
+    return request<void>('/auth/logout', { method: 'POST', signal }, token);
   },
-  sessions(token: string) {
-    return request<Session[]>('/sessions', {}, token);
+  updateProfile(token: string, displayName: string) {
+    return request<User>(
+      '/auth/profile',
+      { method: 'PATCH', body: JSON.stringify({ display_name: displayName }) },
+      token,
+    );
+  },
+  changePassword(token: string, currentPassword: string, newPassword: string) {
+    return request<void>(
+      '/auth/password',
+      {
+        method: 'POST',
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      },
+      token,
+    );
+  },
+  deleteAccount(token: string, currentPassword: string) {
+    return request<void>(
+      '/auth/account',
+      {
+        method: 'DELETE',
+        body: JSON.stringify({ current_password: currentPassword, confirmation: 'DELETE' }),
+      },
+      token,
+    );
+  },
+  sessions(token: string, signal?: AbortSignal) {
+    return request<Session[]>('/sessions', { signal }, token);
   },
   createSession(token: string, title = '새로운 대화') {
     return request<Session>('/sessions', { method: 'POST', body: JSON.stringify({ title }) }, token);
@@ -89,11 +266,11 @@ export const api = {
   deleteSession(token: string, sessionId: string) {
     return request<void>(`/sessions/${sessionId}`, { method: 'DELETE' }, token);
   },
-  history(token: string, sessionId: string) {
-    return request<Message[]>(`/sessions/${sessionId}/messages`, {}, token);
+  history(token: string, sessionId: string, signal?: AbortSignal) {
+    return request<Message[]>(`/sessions/${sessionId}/messages`, { signal }, token);
   },
-  attachments(token: string, sessionId: string) {
-    return request<Attachment[]>(`/sessions/${sessionId}/attachments`, {}, token);
+  attachments(token: string, sessionId: string, signal?: AbortSignal) {
+    return request<Attachment[]>(`/sessions/${sessionId}/attachments`, { signal }, token);
   },
   async uploadAttachment(
     token: string,
@@ -126,6 +303,9 @@ export const api = {
     speak = true,
     casualMode = false,
     persona: Persona = 'default',
+    internetEnabled = false,
+    thinkingMode = false,
+    reasoningEffort?: ReasoningEffort,
   ) {
     return request<ChatResponse>(
       '/chat/messages',
@@ -138,10 +318,38 @@ export const api = {
           speak,
           casual_mode: casualMode,
           persona,
+          internet_enabled: internetEnabled,
+          thinking_mode: thinkingMode,
+          reasoning_effort: reasoningEffort,
         }),
       },
       token,
     );
+  },
+  chatStream(
+    token: string,
+    text: string,
+    onDelta: (delta: string) => void,
+    sessionId?: string,
+    voiceId?: string,
+    speak = true,
+    casualMode = false,
+    persona: Persona = 'default',
+    internetEnabled = false,
+    thinkingMode = false,
+    reasoningEffort?: ReasoningEffort,
+  ) {
+    return streamingChatRequest(token, {
+      text,
+      session_id: sessionId,
+      voice_id: voiceId,
+      speak,
+      casual_mode: casualMode,
+      persona,
+      internet_enabled: internetEnabled,
+      thinking_mode: thinkingMode,
+      reasoning_effort: reasoningEffort,
+    }, onDelta);
   },
   regenerate(
     token: string,
@@ -150,6 +358,9 @@ export const api = {
     speak = true,
     casualMode = false,
     persona: Persona = 'default',
+    internetEnabled = false,
+    thinkingMode = false,
+    reasoningEffort?: ReasoningEffort,
   ) {
     return request<ChatResponse>(
       `/chat/messages/${messageId}/regenerate`,
@@ -160,13 +371,33 @@ export const api = {
           speak,
           casual_mode: casualMode,
           persona,
+          internet_enabled: internetEnabled,
+          thinking_mode: thinkingMode,
+          reasoning_effort: reasoningEffort,
         }),
+      },
+      token,
+    );
+  },
+  messageAudio(token: string, messageId: string, voiceId?: string) {
+    return request<Message>(
+      `/chat/messages/${messageId}/audio`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ voice_id: voiceId }),
       },
       token,
     );
   },
   memories(token: string) {
     return request<MemoryItem[]>('/memories', {}, token);
+  },
+  modelCapabilities(token: string, persona: Persona, signal?: AbortSignal) {
+    return request<ModelReasoningCapabilities>(
+      `/model-capabilities?persona=${encodeURIComponent(persona)}`,
+      { signal },
+      token,
+    );
   },
   addMemory(token: string, memoryType: MemoryItem['memory_type'], content: string) {
     return request<MemoryItem>(
@@ -178,11 +409,21 @@ export const api = {
   deleteMemory(token: string, id: string) {
     return request<void>(`/memories/${id}`, { method: 'DELETE' }, token);
   },
-  voices(token: string) {
-    return request<Voice[]>('/voices', {}, token);
+  portrait(token: string) {
+    return request<PortraitResponse>('/portrait', {}, token);
   },
-  voiceStatus(token: string) {
-    return request<VoiceStatus>('/voices/status', {}, token);
+  generatePortrait(token: string, persona: Persona) {
+    return request<PortraitResponse>(
+      '/portrait/generate',
+      { method: 'POST', body: JSON.stringify({ persona }) },
+      token,
+    );
+  },
+  voices(token: string, signal?: AbortSignal) {
+    return request<Voice[]>('/voices', { signal }, token);
+  },
+  voiceStatus(token: string, signal?: AbortSignal) {
+    return request<VoiceStatus>('/voices/status', { signal }, token);
   },
   deleteVoice(token: string, voiceId: string) {
     return request<void>(`/voices/${voiceId}`, { method: 'DELETE' }, token);
@@ -194,32 +435,32 @@ export const api = {
     referenceText: string,
     description: string,
   ) {
-    const extension = uri.split('.').pop()?.toLowerCase() ?? 'm4a';
-    const mime = extension === 'webm' ? 'audio/webm' : extension === 'wav' ? 'audio/wav' : 'audio/mp4';
     const form = new FormData();
     form.append('voice_name', voiceName);
     form.append('reference_text', referenceText);
     form.append('description', description);
     if (Platform.OS === 'web') {
       const blob = await (await fetch(uri)).blob();
+      const { extension } = audioUploadMetadata(uri, blob.type);
       form.append('audio', blob, `voice-sample.${extension}`);
     } else {
+      const { extension, mime } = audioUploadMetadata(uri);
       form.append('audio', { uri, name: `voice-sample.${extension}`, type: mime } as unknown as Blob);
     }
     const voice = await request<Voice>('/voices', { method: 'POST', body: form }, token);
     return voice;
   },
-  async transcribe(token: string, uri: string): Promise<string> {
-    const extension = uri.split('.').pop()?.toLowerCase() ?? 'm4a';
-    const mime = extension === 'webm' ? 'audio/webm' : extension === 'wav' ? 'audio/wav' : 'audio/mp4';
+  async transcribe(token: string, uri: string, signal?: AbortSignal): Promise<string> {
     const form = new FormData();
     if (Platform.OS === 'web') {
-      const blob = await (await fetch(uri)).blob();
+      const blob = await (await fetch(uri, { signal })).blob();
+      const { extension } = audioUploadMetadata(uri, blob.type);
       form.append('audio', blob, `segment.${extension}`);
     } else {
+      const { extension, mime } = audioUploadMetadata(uri);
       form.append('audio', { uri, name: `segment.${extension}`, type: mime } as unknown as Blob);
     }
-    const result = await request<{ text: string }>('/voice/transcribe', { method: 'POST', body: form }, token);
+    const result = await request<{ text: string }>('/voice/transcribe', { method: 'POST', body: form, signal }, token);
     return result.text;
   },
 };

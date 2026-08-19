@@ -9,6 +9,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 class MemoryPalStaticHandler(SimpleHTTPRequestHandler):
     base_prefix = ""
+    favicon = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        b'<rect width="64" height="64" rx="16" fill="#6C63FF"/>'
+        b'<path d="M18 20h28v20H31l-9 8v-8h-4z" fill="white"/>'
+        b'<circle cx="26" cy="30" r="2" fill="#6C63FF"/>'
+        b'<circle cx="32" cy="30" r="2" fill="#6C63FF"/>'
+        b'<circle cx="38" cy="30" r="2" fill="#6C63FF"/>'
+        b'</svg>'
+    )
 
     def __init__(self, *args, directory: str, **kwargs):
         super().__init__(*args, directory=directory, **kwargs)
@@ -20,10 +29,26 @@ class MemoryPalStaticHandler(SimpleHTTPRequestHandler):
             path = path[len(self.base_prefix):] or "/"
             self.path = urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
 
+    def _serve_favicon(self) -> bool:
+        if urlsplit(self.path).path != "/favicon.ico":
+            return False
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(self.favicon)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(self.favicon)
+        return True
+
     def do_GET(self) -> None:
+        if self._serve_favicon():
+            return
         self._strip_prefix(); super().do_GET()
 
     def do_HEAD(self) -> None:
+        if self._serve_favicon():
+            return
         self._strip_prefix(); super().do_HEAD()
 
 

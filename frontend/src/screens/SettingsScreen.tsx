@@ -6,12 +6,12 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import { BlurView } from 'expo-blur';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { api } from '../api';
 import { useTheme, type ThemeColors } from '../theme';
-import type { Persona, User, Voice, VoiceStatus } from '../types';
+import type { ModelReasoningCapabilities, Persona, ReasoningEffort, User, Voice, VoiceStatus } from '../types';
 
 function ChoiceRow({ label, options }: { label: string; options: string[] }) {
   const { colors } = useTheme();
@@ -38,10 +38,19 @@ type Props = {
   persona: Persona;
   darkMode: boolean;
   voiceReplyEnabled: boolean;
+  internetEnabled: boolean;
+  thinkingMode: boolean;
+  reasoningEffort: ReasoningEffort;
+  modelCapabilities?: ModelReasoningCapabilities;
+  modelCapabilitiesLoading: boolean;
   onCasualModeChange: (enabled: boolean) => void;
   onPersonaChange: (persona: Persona) => void;
   onDarkModeChange: (enabled: boolean) => void;
   onVoiceReplyChange: (enabled: boolean) => void;
+  onInternetEnabledChange: (enabled: boolean) => void;
+  onThinkingModeChange: (enabled: boolean) => void;
+  onReasoningEffortChange: (effort: ReasoningEffort) => void;
+  onOpenAccount: () => void;
   logout: () => Promise<void>;
 };
 
@@ -52,14 +61,26 @@ export function SettingsScreen({
   persona,
   darkMode,
   voiceReplyEnabled,
+  internetEnabled,
+  thinkingMode,
+  reasoningEffort,
+  modelCapabilities,
+  modelCapabilitiesLoading,
   onCasualModeChange,
   onPersonaChange,
   onDarkModeChange,
   onVoiceReplyChange,
+  onInternetEnabledChange,
+  onThinkingModeChange,
+  onReasoningEffortChange,
+  onOpenAccount,
   logout,
 }: Props) {
   const { colors } = useTheme();
   const styles = createStyles(colors);
+  const thinkingSupported = modelCapabilities?.thinking_supported === true;
+  const supportedEfforts = modelCapabilities?.reasoning_efforts ?? [];
+  const reasoningDepthSupported = supportedEfforts.length > 0;
   const sampleRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const sampleState = useAudioRecorderState(sampleRecorder, 250);
   const [voices, setVoices] = useState<Voice[]>([]);
@@ -74,38 +95,123 @@ export function SettingsScreen({
   const [deleteTargetId, setDeleteTargetId] = useState<string>();
   const [deletingVoiceId, setDeletingVoiceId] = useState<string>();
   const [voiceMessage, setVoiceMessage] = useState('');
+  const mountedRef = useRef(true);
+  const voiceFormVisibleRef = useRef(false);
+  const recordingRef = useRef(false);
+  const recordingModeRef = useRef(false);
+  const recordingTransitionRef = useRef(false);
+  const recordingOperationGenerationRef = useRef(0);
+  const voiceStateGenerationRef = useRef(0);
+  const voiceRefreshControllerRef = useRef<AbortController | undefined>(undefined);
 
-  const loadVoices = useCallback(() => {
-    void api.voices(token).then(setVoices).catch(() => setVoices([]));
-    void api.voiceStatus(token).then(setVoiceStatus).catch(() => setVoiceStatus(undefined));
+  const restorePlaybackMode = useCallback(async () => {
+    if (!recordingModeRef.current) return;
+    recordingModeRef.current = false;
+    try {
+      await setAudioModeAsync({ allowsRecording: false });
+    } catch {
+      // Teardown cannot present a useful error; playback config is applied again when needed.
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      recordingOperationGenerationRef.current += 1;
+      voiceRefreshControllerRef.current?.abort();
+      voiceRefreshControllerRef.current = undefined;
+      const stopPending = recordingRef.current
+        ? sampleRecorder.stop().catch(() => undefined)
+        : Promise.resolve();
+      recordingRef.current = false;
+      recordingTransitionRef.current = false;
+      void stopPending.finally(() => restorePlaybackMode());
+    };
+  }, [restorePlaybackMode, sampleRecorder]);
+
+  const refreshVoiceState = useCallback(async (generation: number, signal: AbortSignal, preserveOnError = false) => {
+    const [voicesResult, statusResult] = await Promise.allSettled([
+      api.voices(token, signal),
+      api.voiceStatus(token, signal),
+    ] as const);
+    if (!mountedRef.current || signal.aborted || voiceStateGenerationRef.current !== generation) return;
+    if (voicesResult.status === 'fulfilled') setVoices(voicesResult.value);
+    else if (!preserveOnError) setVoices([]);
+    if (statusResult.status === 'fulfilled') setVoiceStatus(statusResult.value);
+    else if (!preserveOnError) setVoiceStatus(undefined);
   }, [token]);
 
-  useEffect(loadVoices, [loadVoices]);
+  const beginVoiceRefresh = useCallback((generation: number, preserveOnError = false) => {
+    voiceRefreshControllerRef.current?.abort();
+    const controller = new AbortController();
+    voiceRefreshControllerRef.current = controller;
+    void refreshVoiceState(generation, controller.signal, preserveOnError).finally(() => {
+      if (voiceRefreshControllerRef.current === controller) voiceRefreshControllerRef.current = undefined;
+    });
+    return controller;
+  }, [refreshVoiceState]);
+
+  useEffect(() => {
+    const generation = ++voiceStateGenerationRef.current;
+    const controller = beginVoiceRefresh(generation);
+    return () => controller.abort();
+  }, [beginVoiceRefresh]);
 
   const toggleSampleRecording = async () => {
+    if (recordingTransitionRef.current) return;
+    const operationGeneration = ++recordingOperationGenerationRef.current;
+    recordingTransitionRef.current = true;
     try {
       setVoiceMessage('');
-      if (recording) {
+      if (recordingRef.current) {
+        recordingRef.current = false;
+        setRecording(false);
         await sampleRecorder.stop();
         const recordedUri = sampleRecorder.uri;
         if (!recordedUri) throw new Error('녹음 파일을 만들지 못했습니다. 다시 녹음해 주세요.');
-        setRecording(false);
+        if (
+          !mountedRef.current
+          || !voiceFormVisibleRef.current
+          || recordingOperationGenerationRef.current !== operationGeneration
+        ) return;
         setSampleUri(recordedUri);
-        await setAudioModeAsync({ allowsRecording: false });
         setVoiceMessage('샘플 녹음이 준비됐어요. 입력한 문장과 녹음 내용이 같은지 확인해 주세요.');
         return;
       }
       const permission = await requestRecordingPermissionsAsync();
       if (!permission.granted) throw new Error('개인화 음성을 만들려면 마이크 권한이 필요합니다.');
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      recordingModeRef.current = true;
+      if (
+        !mountedRef.current
+        || !voiceFormVisibleRef.current
+        || recordingOperationGenerationRef.current !== operationGeneration
+      ) return;
       await sampleRecorder.prepareToRecordAsync();
+      if (
+        !mountedRef.current
+        || !voiceFormVisibleRef.current
+        || recordingOperationGenerationRef.current !== operationGeneration
+      ) return;
       sampleRecorder.record();
+      recordingRef.current = true;
       setSampleUri(undefined);
       setRecording(true);
       setVoiceMessage('아래 참조 문장을 자연스럽게 읽고 녹음을 완료해 주세요.');
     } catch (reason) {
-      setRecording(false);
-      setVoiceMessage(reason instanceof Error ? reason.message : '녹음을 시작하지 못했습니다.');
+      recordingRef.current = false;
+      if (
+        mountedRef.current
+        && voiceFormVisibleRef.current
+        && recordingOperationGenerationRef.current === operationGeneration
+      ) {
+        setRecording(false);
+        setVoiceMessage(reason instanceof Error ? reason.message : '녹음을 시작하지 못했습니다.');
+      }
+    } finally {
+      recordingTransitionRef.current = false;
+      if (!recordingRef.current) await restorePlaybackMode();
     }
   };
 
@@ -132,16 +238,30 @@ export function SettingsScreen({
         referenceText.trim(),
         description.trim(),
       );
+      if (!mountedRef.current) return;
+      const generation = ++voiceStateGenerationRef.current;
+      const personalizedCountInList = voices.filter((item) => item.is_personalized && item.id !== voice.id).length + 1;
       setVoices((current) => [voice, ...current.filter((item) => item.id !== voice.id)]);
+      setVoiceStatus((current) => ({
+        has_personalized_voice: true,
+        personalized_voice_count: Math.max(
+          personalizedCountInList,
+          current?.personalized_voice_count ?? 0,
+        ),
+      }));
+      beginVoiceRefresh(generation, true);
       setVoiceName('');
       setDescription('');
       setSampleUri(undefined);
+      voiceFormVisibleRef.current = false;
       setShowVoiceForm(false);
       setVoiceMessage('개인화 음성이 등록됐어요.');
     } catch (reason) {
-      setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 등록하지 못했습니다.');
+      if (mountedRef.current) {
+        setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 등록하지 못했습니다.');
+      }
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   };
 
@@ -151,18 +271,42 @@ export function SettingsScreen({
     setVoiceMessage(`'${voice.voice_name}' 음성과 원본 파일을 삭제하고 있어요...`);
     try {
       await api.deleteVoice(token, voice.id);
+      if (!mountedRef.current) return;
+      const generation = ++voiceStateGenerationRef.current;
       setVoices((current) => current.filter((item) => item.id !== voice.id));
       setVoiceStatus((current) => {
         const count = Math.max(0, (current?.personalized_voice_count ?? 1) - 1);
         return { has_personalized_voice: count > 0, personalized_voice_count: count };
       });
+      beginVoiceRefresh(generation, true);
       setDeleteTargetId(undefined);
       setVoiceMessage(`'${voice.voice_name}' 음성과 원본 파일을 삭제했어요.`);
     } catch (reason) {
-      setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 삭제하지 못했습니다.');
+      if (mountedRef.current) {
+        setVoiceMessage(reason instanceof Error ? reason.message : '개인화 음성을 삭제하지 못했습니다.');
+      }
     } finally {
-      setDeletingVoiceId(undefined);
+      if (mountedRef.current) setDeletingVoiceId(undefined);
     }
+  };
+
+  const toggleVoiceForm = () => {
+    const nextVisible = !showVoiceForm;
+    if (!nextVisible) recordingOperationGenerationRef.current += 1;
+    voiceFormVisibleRef.current = nextVisible;
+    setShowVoiceForm(nextVisible);
+    setVoiceMessage('');
+    if (nextVisible || !recordingRef.current) return;
+
+    recordingRef.current = false;
+    recordingTransitionRef.current = true;
+    setRecording(false);
+    void sampleRecorder.stop()
+      .catch(() => undefined)
+      .finally(() => {
+        recordingTransitionRef.current = false;
+        void restorePlaybackMode();
+      });
   };
 
   return (
@@ -174,6 +318,13 @@ export function SettingsScreen({
           <Text style={styles.name}>{user.display_name}</Text>
           <Text style={styles.email}>{user.email}</Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onOpenAccount}
+          style={({ pressed }) => [styles.accountEditButton, pressed && styles.accountEditButtonPressed]}
+        >
+          <Text style={styles.accountEditButtonText}>정보 변경</Text>
+        </Pressable>
       </View>
 
       <Text style={styles.sectionTitle}>화면 설정</Text>
@@ -218,6 +369,19 @@ export function SettingsScreen({
           </View>
           <Text style={styles.personaDescription}>감정을 세심하게 듣고 공감하는 대화 동반자</Text>
         </Pressable>
+        <View style={styles.divider} />
+        <Pressable
+          onPress={() => onPersonaChange('none')}
+          style={[styles.personaOption, persona === 'none' && styles.personaOptionActive]}
+        >
+          <View style={styles.personaHeader}>
+            <Text style={styles.personaTitle}>없음</Text>
+            {persona === 'none' && <Text style={styles.personaSelected}>선택됨</Text>}
+          </View>
+          <Text style={styles.personaDescription}>
+            특정 역할을 연기하지 않고 기억·검색 근거와 아는 범위에서 대화
+          </Text>
+        </Pressable>
       </View>
 
       <Text style={styles.sectionTitle}>대화 스타일</Text>
@@ -239,17 +403,109 @@ export function SettingsScreen({
         </View>
       </View>
 
+      <Text style={styles.sectionTitle}>정보 검색</Text>
+      <View style={styles.card}>
+        <View style={styles.switchRow}>
+          <View style={styles.switchCopy}>
+            <Text style={styles.rowLabel}>답변시 인터넷 사용</Text>
+            <Text style={styles.switchDescription}>
+              {internetEnabled
+                ? '최신 정보가 필요하면 웹을 검색해 답변에 반영해요.'
+                : '모델 지식, 기억과 첨부파일만 사용해 답변해요.'}
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel="답변시 인터넷 사용"
+            onValueChange={onInternetEnabledChange}
+            thumbColor="#FFFFFF"
+            trackColor={{ false: colors.border, true: colors.primary }}
+            value={internetEnabled}
+          />
+        </View>
+      </View>
+
+      <Text style={styles.sectionTitle}>AI 응답 설정</Text>
+      <View style={styles.card}>
+        <View style={styles.switchRow}>
+          <View style={styles.switchCopy}>
+            <Text style={styles.rowLabel}>생각 모드</Text>
+            <Text style={styles.switchDescription}>
+              {modelCapabilitiesLoading
+                ? 'LM Studio에서 현재 모델의 추론 지원 상태를 확인하고 있어요.'
+                : !modelCapabilities?.available
+                  ? '현재 모델의 추론 지원 상태를 확인할 수 없어요.'
+                  : !thinkingSupported
+                    ? `${modelCapabilities.model}은 생각 모드를 지원하지 않아요.`
+                    : thinkingMode
+                      ? '답변 전에 충분히 생각해 더 신중하게 답해요. 응답 시간이 길어질 수 있어요.'
+                      : '현재 모델이 생각 모드를 지원해요. 필요할 때 켜 주세요.'}
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel="생각 모드"
+            accessibilityState={{ disabled: modelCapabilitiesLoading || !thinkingSupported }}
+            disabled={modelCapabilitiesLoading || !thinkingSupported}
+            onValueChange={onThinkingModeChange}
+            thumbColor="#FFFFFF"
+            trackColor={{ false: colors.border, true: colors.primary }}
+            value={thinkingMode && thinkingSupported}
+          />
+        </View>
+        <View style={styles.divider} />
+        <View style={(!thinkingMode || !reasoningDepthSupported) && styles.reasoningDisabled}>
+          <Text style={styles.rowLabel}>추론 깊이</Text>
+          <View style={[styles.choiceRow, styles.reasoningChoices]}>
+            {([
+              { value: 'low', label: '낮음' },
+              { value: 'medium', label: '중간' },
+              { value: 'high', label: '높음' },
+            ] as const).map((option) => (
+              <Pressable
+                accessibilityLabel={`추론 깊이 ${option.label}`}
+                accessibilityState={{
+                  disabled: !thinkingMode || !supportedEfforts.includes(option.value),
+                  selected: reasoningEffort === option.value,
+                }}
+                disabled={!thinkingMode || !supportedEfforts.includes(option.value)}
+                key={option.value}
+                onPress={() => onReasoningEffortChange(option.value)}
+                style={[styles.choice, reasoningEffort === option.value && styles.choiceActive]}
+              >
+                <Text style={[styles.choiceText, reasoningEffort === option.value && styles.choiceTextActive]}>
+                  {option.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Text style={styles.reasoningHint}>
+            {modelCapabilitiesLoading
+              ? 'LM Studio에서 모델의 추론 기능을 확인하고 있어요.'
+              : !modelCapabilities?.available
+                ? '모델 기능을 확인할 수 없어 추론 옵션을 안전하게 비활성화했어요.'
+                : !thinkingSupported
+                  ? `${modelCapabilities.model}은 생각 모드를 지원하지 않아요.`
+                  : !reasoningDepthSupported
+                    ? '이 모델은 생각 모드만 지원하며 추론 깊이는 조절할 수 없어요.'
+                    : !thinkingMode
+                      ? '생각 모드를 켜면 모델이 지원하는 추론 깊이를 선택할 수 있어요.'
+                      : `LM Studio가 제공한 추론 깊이: ${supportedEfforts.join(', ')}`}
+          </Text>
+        </View>
+      </View>
+
       <Text style={styles.sectionTitle}>음성 답변 설정</Text>
       <View style={[styles.card, styles.voiceReplyCard]}>
         <View style={styles.switchRow}>
           <View style={styles.switchCopy}>
-            <Text style={styles.rowLabel}>음성으로 바로 답하기</Text>
+            <Text style={styles.rowLabel}>답변 음성 자동 출력</Text>
             <Text style={styles.switchDescription}>
-              {voiceReplyEnabled ? '답변이 도착하면 음성을 자동으로 재생해요.' : '음성으로 듣기 버튼을 눌러 재생해요.'}
+              {voiceReplyEnabled
+                ? '답변과 음성을 함께 생성하고, 도착하면 자동으로 재생해요.'
+                : '답변은 텍스트만 생성해요. 필요할 때 ‘음성으로 듣기’를 눌러 즉시 만들 수 있어요.'}
             </Text>
           </View>
           <Switch
-            accessibilityLabel="음성으로 바로 답하기"
+            accessibilityLabel="답변 음성 자동 출력"
             onValueChange={onVoiceReplyChange}
             thumbColor="#FFFFFF"
             trackColor={{ false: colors.border, true: colors.primary }}
@@ -282,7 +538,7 @@ export function SettingsScreen({
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>개인화 음성</Text>
         <Pressable
-          onPress={() => { setShowVoiceForm((value) => !value); setVoiceMessage(''); }}
+          onPress={toggleVoiceForm}
           style={styles.addVoiceButton}
         >
           <Text style={styles.addVoiceButtonText}>{showVoiceForm ? '닫기' : '+ 음성 추가'}</Text>
@@ -415,6 +671,9 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   avatarText: { color: '#FFFFFF', fontSize: 19, fontWeight: '900' },
   name: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   email: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  accountEditButton: { minHeight: 36, paddingHorizontal: 13, borderRadius: 12, borderWidth: 1, borderColor: colors.lilac, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
+  accountEditButtonPressed: { opacity: 0.74, transform: [{ scale: 0.98 }] },
+  accountEditButtonText: { color: colors.primaryDark, fontSize: 11, fontWeight: '900' },
   sectionTitle: { color: colors.ink, fontSize: 14, fontWeight: '900', marginTop: 25, marginBottom: 10 },
   sectionHeader: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
   addVoiceButton: { marginBottom: 7, borderRadius: 999, backgroundColor: colors.primarySoft, paddingHorizontal: 13, paddingVertical: 8 },
@@ -460,6 +719,9 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   choiceActive: { backgroundColor: colors.primarySoft },
   choiceText: { color: colors.muted, fontSize: 11, fontWeight: '700' },
   choiceTextActive: { color: colors.primaryDark },
+  reasoningChoices: { marginTop: 10 },
+  reasoningDisabled: { opacity: 0.45 },
+  reasoningHint: { color: colors.muted, fontSize: 10, lineHeight: 15, marginTop: 8 },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: 17 },
   voiceRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
   personalizationStatus: { borderRadius: 14, backgroundColor: colors.primarySoft, padding: 13, marginBottom: 8 },

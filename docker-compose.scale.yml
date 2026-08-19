@@ -1,0 +1,240 @@
+name: memorypal-scale
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${MEMORYPAL_POSTGRES_DB:-memorypal}
+      POSTGRES_USER: ${MEMORYPAL_POSTGRES_USER:-memorypal_owner}
+      POSTGRES_PASSWORD: ${MEMORYPAL_POSTGRES_PASSWORD:?Set MEMORYPAL_POSTGRES_PASSWORD in .env.scale}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+    command:
+      - postgres
+      - -c
+      - max_connections=${MEMORYPAL_POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - shared_buffers=${MEMORYPAL_POSTGRES_SHARED_BUFFERS:-256MB}
+      - -c
+      - wal_compression=on
+      - -c
+      - timezone=UTC
+    ports:
+      - "127.0.0.1:${MEMORYPAL_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - memorypal_postgres_data:/var/lib/postgresql/data
+      - ./deploy/scale/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+    networks:
+      - memorypal_data
+
+  redis-acl-init:
+    image: redis:7-alpine
+    restart: "no"
+    environment:
+      REDIS_USER: ${MEMORYPAL_REDIS_USER:-memorypal}
+      REDIS_PASSWORD: ${MEMORYPAL_REDIS_PASSWORD:?Set MEMORYPAL_REDIS_PASSWORD in .env.scale}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$$REDIS_USER" in
+          default|*[!a-zA-Z0-9_-]*) echo "REDIS_USER must be a non-default alphanumeric name" >&2; exit 1 ;;
+        esac
+        password_hash="$$(printf '%s' "$$REDIS_PASSWORD" | sha256sum)"
+        password_hash="$${password_hash%% *}"
+        umask 077
+        printf 'user default off\nuser %s reset on #%s ~* &* +@all\n' "$$REDIS_USER" "$$password_hash" > /acl/users.acl
+        chown redis:redis /acl/users.acl
+    volumes:
+      - memorypal_redis_acl:/acl
+    network_mode: none
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    depends_on:
+      redis-acl-init:
+        condition: service_completed_successfully
+    environment:
+      REDIS_USER: ${MEMORYPAL_REDIS_USER:-memorypal}
+      REDIS_PASSWORD: ${MEMORYPAL_REDIS_PASSWORD:?Set MEMORYPAL_REDIS_PASSWORD in .env.scale}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${MEMORYPAL_REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - noeviction
+      - --aclfile
+      - /usr/local/etc/redis/users.acl
+    ports:
+      - "127.0.0.1:${MEMORYPAL_REDIS_PORT:-6380}:6379"
+    volumes:
+      - memorypal_redis_data:/data
+      - memorypal_redis_acl:/usr/local/etc/redis:ro
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli --user \"$$REDIS_USER\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 20s
+    networks:
+      - memorypal_data
+
+  migrate:
+    image: pgvector/pgvector:pg16
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${MEMORYPAL_POSTGRES_DB:-memorypal}
+      PGUSER: ${MEMORYPAL_POSTGRES_USER:-memorypal_owner}
+      PGPASSWORD: ${MEMORYPAL_POSTGRES_PASSWORD:?Set MEMORYPAL_POSTGRES_PASSWORD in .env.scale}
+      PGOPTIONS: -c search_path=memorypal_gateway,public
+    volumes:
+      - ./deploy/scale/postgres/migrations:/migrations:ro
+      - ./backend/gateway/migrations:/gateway-runtime:ro
+      - ./backend/archive_service/sql_migrations:/archive-runtime:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        psql --no-psqlrc --set ON_ERROR_STOP=1 --command \
+          "ALTER TABLE memorypal_meta.schema_migrations ADD COLUMN IF NOT EXISTS checksum text"
+        archive_expected=1
+        archive_migrations="$$(find /archive-runtime -maxdepth 1 -type f -name '*.sql' | sort -V)"
+        if [ -z "$$archive_migrations" ]; then
+          echo "No Archive SQL migrations were found" >&2
+          exit 1
+        fi
+        for archive_migration in $$archive_migrations; do
+          archive_name="$$(basename "$$archive_migration")"
+          archive_prefix="$${archive_name%%_*}"
+          case "$$archive_prefix" in
+            ''|*[!0-9]*|0*) echo "Invalid Archive migration prefix: $$archive_name" >&2; exit 1 ;;
+          esac
+          if [ "$$archive_prefix" -ne "$$archive_expected" ]; then
+            echo "Archive migration prefixes must be consecutive: expected $$archive_expected, found $$archive_prefix" >&2
+            exit 1
+          fi
+          archive_expected=$$((archive_expected + 1))
+        done
+        migration_files="$$(find /gateway-runtime -maxdepth 1 -type f -name '*.sql' | sort)
+        $$archive_migrations
+        $$(find /migrations -maxdepth 1 -type f -name '*.sql' | sort)"
+        expected_versions=""
+        for migration in $$migration_files; do
+          [ -f "$$migration" ] || continue
+          case "$$migration" in
+            /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            /archive-runtime/*) version="archive_$$(basename "$$migration")" ;;
+            *) version="$$(basename "$$migration")" ;;
+          esac
+          case "$$version" in
+            *[!a-zA-Z0-9_.-]*) echo "Invalid migration filename: $$version" >&2; exit 1 ;;
+          esac
+          expected_versions="$$expected_versions $$version"
+        done
+        applied_versions="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT version FROM memorypal_meta.schema_migrations")"
+        for applied_version in $$applied_versions; do
+          case " $$expected_versions " in
+            *" $$applied_version "*) ;;
+            *) echo "Migration ledger contains deleted or unknown file: $$applied_version" >&2; exit 1 ;;
+          esac
+        done
+        # Preflight every source checksum before recording baselines or applying
+        # any pending DDL. This prevents a later mismatch from being discovered
+        # only after an earlier migration has already committed.
+        for migration in $$migration_files; do
+          [ -f "$$migration" ] || continue
+          case "$$migration" in
+            /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            /archive-runtime/*) version="archive_$$(basename "$$migration")" ;;
+            *) version="$$(basename "$$migration")" ;;
+          esac
+          checksum="$$(sha256sum "$$migration")"
+          checksum="$${checksum%% *}"
+          if [ "$${#checksum}" -ne 64 ]; then
+            echo "Unable to calculate SHA-256 for $$version" >&2
+            exit 1
+          fi
+          case "$$checksum" in
+            *[!0-9a-f]*) echo "Invalid SHA-256 for $$version" >&2; exit 1 ;;
+          esac
+          applied="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT COALESCE(checksum, '__legacy__') FROM memorypal_meta.schema_migrations WHERE version = '$$version'")"
+          if [ -n "$$applied" ] && [ "$$applied" != "__legacy__" ] && [ "$$applied" != "$$checksum" ]; then
+            echo "Migration checksum mismatch during preflight: $$version" >&2
+            exit 1
+          fi
+        done
+        for migration in $$migration_files; do
+          [ -f "$$migration" ] || continue
+          case "$$migration" in
+            /gateway-runtime/*) version="gateway_$$(basename "$$migration")" ;;
+            /archive-runtime/*) version="archive_$$(basename "$$migration")" ;;
+            *) version="$$(basename "$$migration")" ;;
+          esac
+          case "$$version" in
+            *[!a-zA-Z0-9_.-]*) echo "Invalid migration filename: $$version" >&2; exit 1 ;;
+          esac
+          checksum="$$(sha256sum "$$migration")"
+          checksum="$${checksum%% *}"
+          if [ "$${#checksum}" -ne 64 ]; then
+            echo "Unable to calculate SHA-256 for $$version" >&2
+            exit 1
+          fi
+          case "$$checksum" in
+            *[!0-9a-f]*) echo "Invalid SHA-256 for $$version" >&2; exit 1 ;;
+          esac
+          applied="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT COALESCE(checksum, '__legacy__') FROM memorypal_meta.schema_migrations WHERE version = '$$version'")"
+          if [ "$$applied" = "__legacy__" ]; then
+            echo "Recording baseline checksum for legacy migration: $$version"
+            psql --no-psqlrc --set ON_ERROR_STOP=1 --command \
+              "UPDATE memorypal_meta.schema_migrations SET checksum = '$$checksum' WHERE version = '$$version' AND checksum IS NULL"
+            continue
+          fi
+          if [ -n "$$applied" ] && [ "$$applied" != "$$checksum" ]; then
+            echo "Migration checksum mismatch: $$version" >&2
+            exit 1
+          fi
+          if [ "$$applied" = "$$checksum" ]; then
+            echo "Skipping already applied migration: $$version"
+            continue
+          fi
+          echo "Applying migration: $$version"
+          psql --no-psqlrc --set ON_ERROR_STOP=1 --single-transaction \
+            --file "$$migration" \
+            --command "INSERT INTO memorypal_meta.schema_migrations (version, checksum) VALUES ('$$version', '$$checksum')"
+        done
+        missing_checksums="$$(psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 --command "SELECT count(*) FROM memorypal_meta.schema_migrations WHERE checksum IS NULL")"
+        if [ "$$missing_checksums" != "0" ]; then
+          echo "Migration ledger still contains entries without checksums" >&2
+          exit 1
+        fi
+        psql --no-psqlrc --set ON_ERROR_STOP=1 --command \
+          "ALTER TABLE memorypal_meta.schema_migrations ALTER COLUMN checksum SET NOT NULL"
+    networks:
+      - memorypal_data
+
+volumes:
+  memorypal_postgres_data:
+  memorypal_redis_data:
+  memorypal_redis_acl:
+
+networks:
+  memorypal_data:
+    driver: bridge

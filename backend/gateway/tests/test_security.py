@@ -1,6 +1,11 @@
 import time
 import unittest
+from dataclasses import replace
 
+from fastapi.testclient import TestClient
+
+from memorypal_api.app import create_app
+from memorypal_api.config import load_settings
 from memorypal_api.security import (
     TokenError,
     create_access_token,
@@ -30,6 +35,39 @@ class SecurityTests(unittest.TestCase):
             decode_access_token(token, "test-secret", now=int(time.time()) + 601)
 
 
+def test_gateway_internal_ready_requires_the_current_model_token(tmp_path):
+    settings = replace(
+        load_settings(),
+        database_path=tmp_path / "ready.db",
+        database_url="",
+        root_path="",
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        before = app.state.db.fetch_one(
+            "SELECT COUNT(*) AS count FROM user_transaction_events"
+        )["count"]
+        assert client.get("/v1/health").status_code == 200
+        missing = client.get("/v1/internal/ready")
+        stale = client.get(
+            "/v1/internal/ready",
+            headers={"Authorization": "Bearer stale-model-token"},
+        )
+        accepted = client.get(
+            "/v1/internal/ready",
+            headers={"Authorization": f"Bearer {settings.model_service_token}"},
+        )
+        after = app.state.db.fetch_one(
+            "SELECT COUNT(*) AS count FROM user_transaction_events"
+        )["count"]
+
+    assert missing.status_code == 401
+    assert stale.status_code == 401
+    assert stale.headers["www-authenticate"] == "Bearer"
+    assert accepted.status_code == 200
+    assert accepted.json() == {"status": "ready"}
+    assert after == before
+
+
 if __name__ == "__main__":
     unittest.main()
-

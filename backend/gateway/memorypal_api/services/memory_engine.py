@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Iterable
@@ -30,12 +31,137 @@ TYPE_HINTS = {
     "relationship": re.compile(r"(?:가족|엄마|아빠|어머니|아버지|남편|아내|아들|딸|친구|동료)"),
 }
 
-# 타입 : 민감한 개인정보
-SENSITIVE_RE = re.compile(
+# Long-term memory is deliberately conservative. Labels alone are insufficient:
+# users and model-generated candidates can contain raw credentials or identifiers.
+SENSITIVE_LABEL_RE = re.compile(
     r"(?:비밀번호|패스워드|주민(?:등록)?번호|계좌번호|카드번호|보안코드|인증번호|"
-    r"api\s*key|access\s*token|secret\s*key)",
+    r"api[\s_-]*key|access[\s_-]*token|refresh[\s_-]*token|secret[\s_-]*key|"
+    r"client[\s_-]*secret|private[\s_-]*key|password|passcode|authorization\s*:\s*bearer)",
     re.IGNORECASE,
 )
+RESIDENT_REGISTRATION_RE = re.compile(
+    r"(?<!\d)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])"
+    r"[-\s\u2010-\u2015]?[1-8]\d{6}(?!\d)"
+)
+PHONE_RE = re.compile(
+    r"(?<!\d)(?:"
+    r"(?:\+82[-.\s]?)?0?1[016789][-.\s]?\d{3,4}[-.\s]?\d{4}|"
+    r"0(?:2|[3-6]\d)[-.\s]?\d{3,4}[-.\s]?\d{4}"
+    r")(?!\d)"
+)
+PHONE_CANDIDATE_RE = re.compile(
+    r"(?<!\d)(\+?(?:\d[-().\s]*){8,12}\d)(?!\d)"
+)
+EMAIL_RE = re.compile(
+    r"(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\."
+    r"[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+(?![\w.-])",
+    re.IGNORECASE,
+)
+JWT_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\."
+    r"[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])"
+)
+API_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"sk-(?:live|test|proj)-[A-Za-z0-9_-]{16,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|gh[oprsu]_[A-Za-z0-9]{20,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|AIza[A-Za-z0-9_-]{20,}|"
+    r"AKIA[A-Z0-9]{16}"
+    r")(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+CARD_NUMBER_RE = re.compile(r"(?<!\d)(?:\d[-.\s]?){12,18}\d(?!\d)")
+SECRET_CANDIDATE_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Za-z0-9_+/=-]{24,})(?![A-Za-z0-9])"
+)
+GROUPED_SECRET_RE = re.compile(
+    r"(?<![A-Za-z0-9])((?:[A-Za-z0-9]{4}[-\s]){5,}[A-Za-z0-9]{4})(?![A-Za-z0-9])"
+)
+
+
+def _passes_luhn(value: str) -> bool:
+    digits = [int(character) for character in value if character.isdigit()]
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    checksum = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        checksum += digit
+    return checksum % 10 == 0
+
+
+def _looks_like_korean_phone(value: str) -> bool:
+    digits = re.sub(r"\D", "", value)
+    if value.lstrip().startswith("+82") or digits.startswith("82"):
+        digits = "0" + digits[2:]
+    if len(digits) in {10, 11} and re.match(r"^01[016789]", digits):
+        return True
+    if len(digits) in {9, 10} and digits.startswith("02"):
+        return True
+    return len(digits) in {10, 11} and re.match(r"^0[3-6]\d", digits) is not None
+
+
+def _shannon_entropy(value: str) -> float:
+    if not value:
+        return 0.0
+    return -sum(
+        (count / len(value)) * math.log2(count / len(value))
+        for count in (value.count(character) for character in set(value))
+    )
+
+
+def _looks_like_high_entropy_secret(value: str) -> bool:
+    token = value.rstrip("=")
+    if len(token) < 24:
+        return False
+    character_classes = sum((
+        any(character.islower() for character in token),
+        any(character.isupper() for character in token),
+        any(character.isdigit() for character in token),
+        any(character in "_+/-" for character in token),
+    ))
+    if character_classes < 2:
+        return False
+    entropy = _shannon_entropy(token)
+    if len(token) >= 32 and re.fullmatch(r"[0-9a-fA-F]+", token):
+        return entropy >= 3.35
+    return entropy >= 4.0
+
+
+def contains_sensitive_information(text: str) -> bool:
+    """Detect raw personal identifiers and credentials before durable storage."""
+    value = unicodedata.normalize("NFKC", str(text or ""))
+    value = re.sub(r"[\u200b-\u200d\u2060\ufeff]", "", value)
+    if any(pattern.search(value) for pattern in (
+        SENSITIVE_LABEL_RE,
+        RESIDENT_REGISTRATION_RE,
+        PHONE_RE,
+        EMAIL_RE,
+        JWT_RE,
+        API_TOKEN_RE,
+    )):
+        return True
+    if any(
+        _looks_like_korean_phone(match.group(1))
+        for match in PHONE_CANDIDATE_RE.finditer(value)
+    ):
+        return True
+    if any(_passes_luhn(match.group(0)) for match in CARD_NUMBER_RE.finditer(value)):
+        return True
+    if any(
+        _looks_like_high_entropy_secret(match.group(1))
+        for match in SECRET_CANDIDATE_RE.finditer(value)
+    ):
+        return True
+    return any(
+        _looks_like_high_entropy_secret(re.sub(r"[-\s]", "", match.group(1)))
+        for match in GROUPED_SECRET_RE.finditer(value)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,11 +197,13 @@ class MemoryEngine:
         user_id: str,
         session_id: str | None,
         candidate: MemoryCandidate,
+        expected_auth_version: int | None = None,
     ):
         memory_type = candidate.memory_type if candidate.memory_type in MEMORY_TYPES else "fact"
-        content = re.sub(r"\s+", " ", candidate.content.strip())[:1000]
-        if len(content) < 2 or SENSITIVE_RE.search(content):
+        raw_content = re.sub(r"\s+", " ", candidate.content.strip())
+        if len(raw_content) < 2 or contains_sensitive_information(raw_content):
             return None
+        content = raw_content[:1000]
         return self.db.upsert_memory(
             user_id=user_id,
             session_id=session_id,
@@ -85,6 +213,7 @@ class MemoryEngine:
             keywords=" ".join(self.keywords(content)),
             confidence=max(0.0, min(1.0, candidate.confidence)),
             importance=max(0.0, min(1.0, candidate.importance)),
+            expected_auth_version=expected_auth_version,
         )
 
     def remember_many(
@@ -92,6 +221,7 @@ class MemoryEngine:
         user_id: str,
         session_id: str | None,
         candidates: Iterable[MemoryCandidate],
+        expected_auth_version: int | None = None,
     ) -> list:
         result = []
         seen: set[str] = set()
@@ -100,7 +230,10 @@ class MemoryEngine:
             if normalized in seen:
                 continue
             seen.add(normalized)
-            memory = self.remember(user_id, session_id, candidate)
+            memory = self.remember(
+                user_id, session_id, candidate,
+                expected_auth_version=expected_auth_version,
+            )
             if memory is not None:
                 result.append(memory)
         return result

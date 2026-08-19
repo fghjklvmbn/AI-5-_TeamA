@@ -1,11 +1,3 @@
-INSERT INTO sessions (
-
-    session_name
-
-)
-
-VALUES (
-
-    '테스트 세션'
-
-);
+-- Historical filename retained so existing deployment lists remain stable.
+-- Production migrations must never create synthetic Archive records.
+SET search_path TO memorypal_archive, public;

@@ -11,7 +11,8 @@ from pathlib import (
 )
 
 from routers.tts_router import (
-    router as tts_router
+    install_model_service_auth_middleware,
+    router as tts_router,
 )
 
 from services.tts_service import (
@@ -20,6 +21,7 @@ from services.tts_service import (
 
 
 app = FastAPI()
+install_model_service_auth_middleware(app)
 
 
 OUTPUT_DIR = Path(
