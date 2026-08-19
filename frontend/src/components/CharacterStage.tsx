@@ -1,13 +1,20 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme, type ThemeColors } from '../theme';
 import type { CharacterActivity, CharacterCue, CharacterId } from '../types';
 import Live2DCanvas from './character/Live2DCanvas';
 
 const CHARACTERS: Record<CharacterId, { name: string; color: string }> = {
-  haru: { name: '하루', color: '#8F6AE8' },
+  haru: { name: '메모리', color: '#8F6AE8' },
   nari: { name: '나리', color: '#D16E9E' },
+};
+
+const MEMORY_MASCOT = require('../../assets/memory-mascot.png');
+const NARI_ASSISTANT = require('../../assets/nari-assistant.png');
+const CHARACTER_SPRITES: Record<CharacterId, number> = {
+  haru: MEMORY_MASCOT,
+  nari: NARI_ASSISTANT,
 };
 
 const ACTIVITY_TEXT: Record<CharacterActivity, string> = {
@@ -26,6 +33,7 @@ export default function CharacterStage({ characterId, activity, cue, onCharacter
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const character = CHARACTERS[characterId];
+  const spriteUri = Image.resolveAssetSource(CHARACTER_SPRITES[characterId]).uri;
   return <View style={styles.root}>
     <View style={styles.selector}>
       {(Object.keys(CHARACTERS) as CharacterId[]).map((id) => <Pressable
@@ -37,7 +45,7 @@ export default function CharacterStage({ characterId, activity, cue, onCharacter
       ><Text style={[styles.characterChoiceText, characterId === id && styles.characterChoiceTextActive]}>{CHARACTERS[id].name}</Text></Pressable>)}
     </View>
     <View style={[styles.portrait, { borderColor: character.color }]}>
-      <Live2DCanvas key={characterId} characterId={characterId} activity={activity} cue={cue} />
+      <Live2DCanvas key={characterId} characterId={characterId} activity={activity} cue={cue} spriteUri={spriteUri} />
       <View style={[styles.activityDot, activity !== 'idle' && styles.activityDotActive]} />
     </View>
     <Text style={styles.name}>{character.name}</Text>
