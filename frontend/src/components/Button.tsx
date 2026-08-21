@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native';
 
 import { useTheme, type ThemeColors } from '../theme';
 
@@ -41,7 +41,12 @@ export function Button({
 
   return (
     <Pressable
-      style={({ pressed }) => [getVariantStyle(), styles.button, disabled || loading && styles.disabledButton, pressed && styles.pressedButton]}
+      style={({ pressed }) => [
+        getVariantStyle(),
+        styles.button,
+        disabled || loading ? styles.disabledButton : undefined,
+        pressed ? styles.pressedButton : undefined,
+      ]}
       onPress={onPress}
       disabled={disabled || loading}
       accessibilityRole="button"
@@ -49,7 +54,7 @@ export function Button({
     >
       {loading && <ActivityIndicator color={colors.surface} />}
       {!loading && icon && <Text style={styles.buttonIcon}>{icon}</Text>}
-      <Text style={getTextStyle()}>{label}</Text>
+      <Text numberOfLines={1} style={getTextStyle()}>{label}</Text>
     </Pressable>
   );
 }
@@ -64,8 +69,8 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
     gap: 8,
   },
   primaryButton: { backgroundColor: colors.primary },
-  secondaryButton: { backgroundColor: colors.secondary },
-  dangerButton: { backgroundColor: colors.error },
+  secondaryButton: { backgroundColor: colors.primaryDark },
+  dangerButton: { backgroundColor: colors.danger },
   disabledButton: { opacity: 0.5 },
   pressedButton: { opacity: 0.9 },
   buttonText: { color: colors.surface, fontSize: 16, fontWeight: '600' },

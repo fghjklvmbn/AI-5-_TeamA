@@ -127,6 +127,9 @@ location = /api_memoripal/main {
 location ^~ /api_memoripal/main/ {
     proxy_pass http://192.168.2.75:8081/;
     proxy_http_version 1.1;
+    # Preserve browser compression negotiation. The static server returns
+    # gzip plus Vary and immutable cache headers for hashed Expo assets.
+    proxy_set_header Accept-Encoding $http_accept_encoding;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -135,4 +138,7 @@ location ^~ /api_memoripal/main/ {
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
     send_timeout 300s;
+    gzip on;
+    gzip_proxied any;
+    gzip_types application/javascript application/json image/svg+xml text/css;
 }

@@ -3,10 +3,6 @@ import { render, screen, fireEvent } from '@testing-library/react-native';
 import { InputField } from './InputField';
 
 describe('InputField Component', () => {
-  beforeEach(() => {
-    jest.resetModules();
-  });
-
   // 1. 기본 렌더링 - label 표시 검증
   it('renders with label correctly', () => {
     const onChangeText = jest.fn();

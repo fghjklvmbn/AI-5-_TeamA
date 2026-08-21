@@ -24,10 +24,10 @@ def test_on_demand_audio_is_generated_once_and_scoped_to_owner(tmp_path):
         load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
     )
     app = create_app(settings)
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str | None, str]] = []
 
-    async def synthesize(text: str, voice_id: str | None) -> str:
-        calls.append((text, voice_id))
+    async def synthesize(text: str, voice_id: str | None, voice_style: str) -> str:
+        calls.append((text, voice_id, voice_style))
         return "https://example.com/tts/outputs/message.wav"
 
     app.state.pipeline.synthesize = synthesize
@@ -43,11 +43,11 @@ def test_on_demand_audio_is_generated_once_and_scoped_to_owner(tmp_path):
         response = client.post(path, json={}, headers=owner_headers)
         assert response.status_code == 200
         assert response.json()["audio_url"].endswith("message.wav")
-        assert calls == [("음성으로 만들 답변", None)]
+        assert calls == [("음성으로 만들 답변", None, "calm")]
 
         cached = client.post(path, json={}, headers=owner_headers)
         assert cached.status_code == 200
-        assert calls == [("음성으로 만들 답변", None)]
+        assert calls == [("음성으로 만들 답변", None, "calm")]
 
         forbidden = client.post(
             path, json={}, headers={"Authorization": f"Bearer {other_token}"},
@@ -88,7 +88,7 @@ def test_chat_stream_emits_deltas_then_persists_completed_message(tmp_path):
     app.state.pipeline.generate = generate
     app.state.pipeline.extract_memories = extract_memories
     with TestClient(app) as client:
-        _user_id, token = register(client, "stream-chat@example.com")
+        user_id, token = register(client, "stream-chat@example.com")
         response = client.post(
             "/v1/chat/messages/stream",
             json={"text": "인사해 줘", "speak": False},
@@ -105,11 +105,15 @@ def test_chat_stream_emits_deltas_then_persists_completed_message(tmp_path):
         assert events[-1]["type"] == "complete"
         completed = events[-1]["response"]
         assert completed["message"]["assistant_text"] == "안녕하세요"
+        assert completed["message"]["character_cue"]["voice_style"] == "calm"
+        stored = app.state.db.get_conversation(user_id, completed["message"]["id"])
+        assert json.loads(stored["character_cue_json"])["voice_style"] == "calm"
         history = client.get(
             f'/v1/sessions/{completed["session"]["id"]}/messages',
             headers={"Authorization": f"Bearer {token}"},
         )
         assert history.json()[-1]["assistant_text"] == "안녕하세요"
+        assert history.json()[-1]["character_cue"] == completed["message"]["character_cue"]
 
 
 def test_chat_stream_does_not_wait_for_memory_extraction(tmp_path):
@@ -152,22 +156,29 @@ def test_chat_voice_switch_controls_output_length_policy(tmp_path):
     app = create_app(settings)
     max_answer_chars_values: list[int | None] = []
     reasoning_effort_values: list[str] = []
-    synthesis_calls: list[str] = []
+    synthesis_calls: list[tuple[str, str]] = []
 
     async def generate(*_args, **kwargs) -> str:
         max_answer_chars_values.append(kwargs["max_answer_chars"])
         reasoning_effort_values.append(kwargs["reasoning_effort"])
         return "충분히 자세한 답변"
 
-    async def synthesize(text: str, _voice_id: str | None) -> str:
-        synthesis_calls.append(text)
+    async def synthesize(text: str, _voice_id: str | None, voice_style: str) -> str:
+        synthesis_calls.append((text, voice_style))
         return "https://example.com/tts/outputs/automatic.wav"
+
+    async def generate_character_cue(*_args, **_kwargs) -> dict:
+        return {
+            "emotion": "happy", "intensity": 0.8,
+            "gesture": "nod", "voice_style": "bright",
+        }
 
     async def extract_memories(*_args, **_kwargs) -> list:
         return []
 
     app.state.pipeline.generate = generate
     app.state.pipeline.synthesize = synthesize
+    app.state.pipeline.generate_character_cue = generate_character_cue
     app.state.pipeline.extract_memories = extract_memories
     with TestClient(app) as client:
         _user_id, token = register(client, "chat-output-mode@example.com")
@@ -209,4 +220,7 @@ def test_chat_voice_switch_controls_output_length_policy(tmp_path):
         assert regenerated_with_voice.status_code == 200
         assert max_answer_chars_values == [None, 200, None, 200]
         assert reasoning_effort_values == ["high", "low", "medium", "high"]
-        assert synthesis_calls == ["충분히 자세한 답변", "충분히 자세한 답변"]
+        assert synthesis_calls == [
+            ("충분히 자세한 답변", "bright"),
+            ("충분히 자세한 답변", "bright"),
+        ]

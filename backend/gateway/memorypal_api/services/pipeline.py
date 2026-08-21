@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from ..config import Settings
+from .character_cue import parse_character_cue
 from .memory_engine import MEMORY_TYPES, MemoryCandidate
 
 
@@ -276,6 +277,7 @@ class ModelPipeline:
         reasoning_effort: Literal["low", "medium", "high"] | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
         omit_max_tokens: bool = False,
+        max_tokens_override: int | None = None,
     ) -> str:
         headers = {"Authorization": f"Bearer {self.settings.llm_api_key}"}
         selected_model = model or self.settings.llm_default_model
@@ -296,7 +298,7 @@ class ModelPipeline:
             "temperature": temperature,
         }
         if not omit_max_tokens:
-            payload["max_tokens"] = (
+            payload["max_tokens"] = max_tokens_override or (
                 self._THINKING_MAX_TOKENS
                 if thinking_mode
                 else (384 if selected_model == self.settings.llm_default_model else 768)
@@ -910,7 +912,41 @@ class ModelPipeline:
                 continue
         return result
 
-    async def synthesize(self, text: str, voice_id: str | None) -> str | None:
+    async def generate_character_cue(
+        self, text: str, *, persona: str = "default", model_override: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.settings.llm_character_cue_enabled:
+            return parse_character_cue(None, text)
+        model = (
+            model_override.strip()
+            if persona == "none" and model_override
+            else self.model_for_persona(persona)
+        )
+        try:
+            raw = await self._completion(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "너는 캐릭터 연기 큐 분류기다. 답변 문장의 정서만 분석하고 반드시 JSON 객체 하나만 출력한다. "
+                            "emotion은 neutral, happy, sad, concerned, excited 중 하나, intensity는 0~1, "
+                            "gesture는 idle, nod, comfort, celebrate 중 하나, voice_style은 calm, warm, bright 중 하나다."
+                        ),
+                    },
+                    {"role": "user", "content": text[:1600]},
+                ],
+                temperature=0.0,
+                model=model,
+                max_tokens_override=96,
+            )
+            return parse_character_cue(raw, text)
+        except PipelineUnavailable:
+            logger.warning("Structured character cue generation failed; using safe fallback")
+            return parse_character_cue(None, text)
+
+    async def synthesize(
+        self, text: str, voice_id: str | None, voice_style: str = "calm",
+    ) -> str | None:
         selected_voice = voice_id or self.settings.default_voice_id
         try:
             async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
@@ -955,6 +991,7 @@ class ModelPipeline:
                     "text": text,
                     "ref_text": voice["reference_text"],
                     "language": "korean",
+                    "voice_style": voice_style if voice_style in {"calm", "warm", "bright"} else "calm",
                 }
                 files = {"ref_audio": (filename, audio_response.content, content_type)}
                 for attempt in range(2):

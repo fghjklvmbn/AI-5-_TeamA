@@ -662,6 +662,7 @@ def test_synthesize_retries_once_after_temporary_failure(monkeypatch):
             assert headers == {"Authorization": f"Bearer {MODEL_SERVICE_TOKEN}"}
             assert _url.endswith("/synthesize-upload")
             assert data["ref_text"] == "안녕"
+            assert data["voice_style"] == "bright"
             assert files["ref_audio"][0] == "ref.wav"
             assert files["ref_audio"][1] == b"RIFF-reference"
             self.count += 1
@@ -669,7 +670,7 @@ def test_synthesize_retries_once_after_temporary_failure(monkeypatch):
             return Response({"audio_path": "http://127.0.0.1:8003/outputs/retry.wav"})
     client = Client()
     monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: client)
-    assert asyncio.run(pipeline.synthesize("답변", None))
+    assert asyncio.run(pipeline.synthesize("답변", None, "bright"))
 
 
 def test_default_voice_uses_configured_url_when_archive_row_is_missing(monkeypatch):

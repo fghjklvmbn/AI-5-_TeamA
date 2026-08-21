@@ -97,6 +97,11 @@ export with `npm run serve:web`. Do not expose `expo start --web` below
 this public subpath: its root-relative bundle and HMR entrypoint conflict with
 the proxy prefix and can terminate Metro when an external browser connects.
 The production export does not require `/hot` or `/message` WebSockets.
+The bundled static server returns `Cache-Control: no-cache` for the HTML
+shell, one-year immutable caching for content-hashed assets, and gzip for
+compressible responses when the browser advertises support. Keep the
+`Accept-Encoding` forwarding and gzip directives in
+`nginx/memorypal.conf.example` when updating the external Nginx server.
 
 ## Administrator console
 

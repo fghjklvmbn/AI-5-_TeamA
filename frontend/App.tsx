@@ -16,6 +16,7 @@ import { PortraitScreen } from './src/screens/PortraitScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { ThemeProvider, useTheme } from './src/theme';
 import { api } from './src/api';
+import { DEFAULT_CHARACTER_ID, isCharacterId } from './src/character/ids';
 import type { CharacterId, ChatResponse, ConversationMode, Message, ModelReasoningCapabilities, Persona, ReasoningEffort } from './src/types';
 
 function persistPreference(task: Promise<void>): void {
@@ -37,7 +38,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
   const [modelCapabilitiesLoading, setModelCapabilitiesLoading] = useState(false);
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
   const [conversationMode, setConversationMode] = useState<ConversationMode>('chat');
-  const [characterId, setCharacterId] = useState<CharacterId>('haru');
+  const [characterId, setCharacterId] = useState<CharacterId>(DEFAULT_CHARACTER_ID);
   const [voiceProcessing, setVoiceProcessing] = useState<{ active: boolean; transcript: string }>({ active: false, transcript: '' });
   const [incomingMessage, setIncomingMessage] = useState<Message>();
   const [accountOpen, setAccountOpen] = useState(false);
@@ -76,7 +77,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       setReasoningEffort('medium');
       setSelectedModelKey(undefined);
       setConversationMode('chat');
-      setCharacterId('haru');
+      setCharacterId(DEFAULT_CHARACTER_ID);
       return;
     }
     let active = true;
@@ -115,7 +116,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       if (active && (stored === 'live' || stored === 'chat' || stored === 'hybrid')) setConversationMode(stored);
     }).catch(() => undefined);
     void AsyncStorage.getItem(`memorypal.characterId.${user.id}`).then((stored) => {
-      if (active && (stored === 'haru' || stored === 'nari')) setCharacterId(stored);
+      if (active && isCharacterId(stored)) setCharacterId(stored);
     }).catch(() => undefined);
     return () => { active = false; };
   }, [user?.id]);

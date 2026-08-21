@@ -13,3 +13,4 @@ os.environ["MEMORYPAL_ARCHIVE_SERVICE_TOKEN"] = "archive-service-test-token-" + 
 os.environ["MEMORYPAL_JWT_SECRET_FILE"] = ""
 os.environ["MEMORYPAL_MODEL_SERVICE_TOKEN_FILE"] = ""
 os.environ["MEMORYPAL_ARCHIVE_SERVICE_TOKEN_FILE"] = ""
+os.environ["MEMORYPAL_LLM_CHARACTER_CUE_ENABLED"] = "false"

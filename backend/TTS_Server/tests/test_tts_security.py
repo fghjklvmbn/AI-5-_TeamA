@@ -165,6 +165,7 @@ def test_synthesize_upload_authenticates_and_removes_temporary_audio(monkeypatch
 
     def synthesize(**kwargs):
         observed["path"] = kwargs["ref_audio"]
+        observed["voice_style"] = kwargs["voice_style"]
         assert Path(kwargs["ref_audio"]).is_file()
         return {"audio_path": "http://tts/outputs/upload.wav"}
 
@@ -178,11 +179,15 @@ def test_synthesize_upload_authenticates_and_removes_temporary_audio(monkeypatch
         accepted = client.post(
             "/synthesize-upload",
             headers={"Authorization": f"Bearer {MODEL_SERVICE_TOKEN}"},
-            data={"text": "hello", "ref_text": "reference", "language": "korean"},
+            data={
+                "text": "hello", "ref_text": "reference",
+                "language": "korean", "voice_style": "warm",
+            },
             files={"ref_audio": ("ref.wav", b"RIFF-data", "audio/wav")},
         )
 
     assert unauthorized.status_code == 401
+    assert observed["voice_style"] == "warm"
     assert accepted.status_code == 200
     assert not Path(observed["path"]).exists()
 

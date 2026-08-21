@@ -2,15 +2,6 @@
  * Jest 테스트 환경 설정
  */
 
-// React Native Mocks
-jest.mock('react-native/Libraries/Animated/AnimatedAPI', () => ({
-  ...jest.requireActual('react-native/Libraries/Animated/AnimatedAPI'),
-  useSharedElement: jest.fn(),
-  withSpring: jest.fn(),
-  withTiming: jest.fn(),
-  Node: {},
-}));
-
 jest.mock('@react-native-async-storage/async-storage', () => require('./__mocks__/AsyncStorage.js'));
 
 // Fetch Mock
@@ -19,7 +10,7 @@ global.fetch = jest.fn();
 /**
  * 테스트 환경에서 useTheme mock 설정
  */
-jest.mock('../src/theme.ts', () => ({
+jest.mock('./src/theme.ts', () => ({
   useTheme: () => ({
     colors: {
       ink: '#211B2D',
@@ -40,15 +31,6 @@ jest.mock('../src/theme.ts', () => ({
     },
     darkMode: false,
   }),
-}));
-
-/**
- * Mock Alert (React Native)
- */
-jest.mock('react-native/Libraries/Alert', () => ({
-  Alert: {
-    alert: jest.fn(),
-  },
 }));
 
 /**

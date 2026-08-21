@@ -81,6 +81,7 @@ class TTSRequest(BaseModel):
     ref_audio: str = Field(min_length=1, max_length=2048)
     ref_text: str = Field(min_length=1, max_length=500)
     language: Literal["korean"] = "korean"
+    voice_style: Literal["calm", "warm", "bright"] = "calm"
 
 
 @router.post("/synthesize", dependencies=[Depends(require_model_service)])
@@ -102,6 +103,7 @@ async def synthesize(request: TTSRequest):
             ref_audio=request.ref_audio,
             ref_text=request.ref_text,
             language=request.language,
+            voice_style=request.voice_style,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -114,6 +116,7 @@ async def synthesize_upload(
     text: str = Form(min_length=1, max_length=600),
     ref_text: str = Form(min_length=1, max_length=500),
     language: Literal["korean"] = Form(default="korean"),
+    voice_style: Literal["calm", "warm", "bright"] = Form(default="calm"),
     ref_audio: UploadFile = File(...),
 ):
     upload_root = reference_upload_root()
@@ -134,6 +137,7 @@ async def synthesize_upload(
             ref_audio=str(temporary_path),
             ref_text=ref_text,
             language=language,
+            voice_style=voice_style,
         )
         return await synthesize(request)
     finally:

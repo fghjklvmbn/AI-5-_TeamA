@@ -36,13 +36,15 @@ export function InputField({
         <TextInput
           style={styles.input}
           value={value}
-          placeholder={placeholder}
+          placeholder={placeholder ?? label}
+          accessibilityLabel={label}
           placeholderTextColor={colors.muted}
           onChangeText={onChangeText}
           secureTextEntry={secureTextEntry}
           editable={!disabled}
           autoCapitalize={autoCapitalize}
           autoCorrect={autoCorrect}
+          numberOfLines={1}
         />
       </View>
       {error && <Text style={styles.error}>{error}</Text>}
@@ -52,14 +54,14 @@ export function InputField({
 
 const createStyles = (colors: ThemeColors) => StyleSheet.create({
   container: { marginBottom: 16 },
-  label: { color: colors.text, fontSize: 14, fontWeight: '600', marginBottom: 6 },
+  label: { color: colors.ink, fontSize: 14, fontWeight: '600', marginBottom: 6 },
   inputWrapper: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden' },
   disabledInputWrapper: { borderColor: colors.muted },
   input: {
-    color: colors.text,
+    color: colors.ink,
     fontSize: 16,
     paddingVertical: 12,
     paddingHorizontal: 12,
   },
-  error: { color: colors.error, fontSize: 12, marginTop: 4, fontStyle: 'italic' },
+  error: { color: colors.danger, fontSize: 12, marginTop: 4, fontStyle: 'italic' },
 });

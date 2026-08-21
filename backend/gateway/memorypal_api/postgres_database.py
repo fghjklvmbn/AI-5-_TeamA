@@ -464,6 +464,7 @@ class PostgresDatabase(Database):
         assistant_text: str,
         input_audio_path: str | None = None,
         output_audio_path: str | None = None,
+        character_cue_json: str | None = None,
         expected_auth_version: int | None = None,
     ):
         conversation_id = str(uuid.uuid4())
@@ -472,10 +473,13 @@ class PostgresDatabase(Database):
             if expected_auth_version is not None:
                 self._require_account_fence(db, user_id, expected_auth_version)
             db.execute(
-                "INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO conversations ("
+                "id, session_id, user_id, user_text, assistant_text, "
+                "input_audio_path, output_audio_path, created_at, character_cue_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conversation_id, session_id, user_id, user_text, assistant_text,
-                    input_audio_path, output_audio_path, now,
+                    input_audio_path, output_audio_path, now, character_cue_json,
                 ),
             )
             db.execute(

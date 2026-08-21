@@ -141,8 +141,11 @@ export const tokenStorage = {
     return enqueue(async () => {
       if (desiredToken !== UNKNOWN_TOKEN) return desiredToken;
       const value = await runBounded('read', readPlatformToken);
-      if (desiredToken === UNKNOWN_TOKEN) desiredToken = value;
-      return desiredToken === UNKNOWN_TOKEN ? value : desiredToken;
+      if (desiredToken === UNKNOWN_TOKEN) {
+        desiredToken = value;
+        return value;
+      }
+      return desiredToken;
     });
   },
   set(value: string): Promise<void> {

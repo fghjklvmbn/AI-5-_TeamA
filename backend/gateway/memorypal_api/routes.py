@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from .dependencies import CurrentUser, get_current_user
 from .database import AccountAccessFenceError, DatabaseIntegrityError
+from .message_presenter import message_response, serialize_character_cue, stored_character_cue
 from .schemas import (
     AccountDeleteRequest,
     AttachmentResponse,
@@ -587,12 +588,8 @@ def history(session_id: str, request: Request, user: CurrentUser = Depends(get_c
         raise HTTPException(status_code=404, detail="대화 세션을 찾을 수 없습니다.")
     pipeline = request.app.state.pipeline
     return [
-        MessageResponse(
-            id=row["id"],
-            user_text=row["user_text"],
-            assistant_text=row["assistant_text"],
-            audio_url=pipeline.public_audio_url(row["output_audio_path"]),
-            created_at=row["created_at"],
+        message_response(
+            row, audio_url=pipeline.public_audio_url(row["output_audio_path"]),
         )
         for row in request.app.state.db.get_history(user.id, session_id)
     ]
@@ -660,12 +657,21 @@ async def _create_chat_response(
         )
     except PipelineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    audio_url = await pipeline.synthesize(answer, payload.voice_id) if payload.speak else None
+    character_cue = await pipeline.generate_character_cue(
+        answer,
+        persona=payload.persona,
+        model_override=payload.model_key if payload.persona == "none" else None,
+    )
+    audio_url = (
+        await pipeline.synthesize(answer, payload.voice_id, character_cue["voice_style"])
+        if payload.speak else None
+    )
     answer = append_web_sources(answer, agent_context.web_sources)
     try:
         conversation = db.save_conversation(
             user.id, session["id"], payload.text, answer,
             output_audio_path=audio_url,
+            character_cue_json=serialize_character_cue(character_cue),
             expected_auth_version=user.auth_version,
         )
     except AccountAccessFenceError as exc:
@@ -739,13 +745,7 @@ async def _create_chat_response(
     session = db.get_session(user.id, session["id"])
     return ChatResponse(
         session=session_response(session),
-        message=MessageResponse(
-            id=conversation["id"],
-            user_text=conversation["user_text"],
-            assistant_text=conversation["assistant_text"],
-            audio_url=conversation["output_audio_path"],
-            created_at=conversation["created_at"],
-        ),
+        message=message_response(conversation, audio_url=conversation["output_audio_path"]),
         memories_used=[row["content"] for row in memories],
     )
 
@@ -865,11 +865,20 @@ async def regenerate_message(
         )
     except PipelineUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    audio_url = await pipeline.synthesize(answer, payload.voice_id) if payload.speak else None
+    character_cue = await pipeline.generate_character_cue(
+        answer,
+        persona=payload.persona,
+        model_override=payload.model_key if payload.persona == "none" else None,
+    )
+    audio_url = (
+        await pipeline.synthesize(answer, payload.voice_id, character_cue["voice_style"])
+        if payload.speak else None
+    )
     answer = append_web_sources(answer, agent_context.web_sources)
     try:
         updated = db.update_conversation_response(
             user.id, message_id, answer, audio_url,
+            character_cue_json=serialize_character_cue(character_cue),
             expected_auth_version=user.auth_version,
         )
     except AccountAccessFenceError as exc:
@@ -887,10 +896,7 @@ async def regenerate_message(
         raise HTTPException(status_code=404, detail="대화 세션을 찾을 수 없습니다.")
     return ChatResponse(
         session=session_response(session),
-        message=MessageResponse(
-            id=updated["id"], user_text=updated["user_text"], assistant_text=updated["assistant_text"],
-            audio_url=updated["output_audio_path"], created_at=updated["created_at"],
-        ),
+        message=message_response(updated, audio_url=updated["output_audio_path"]),
         memories_used=[row["content"] for row in memories],
     )
 
@@ -919,16 +925,17 @@ async def synthesize_message_audio(
         ):
             raise HTTPException(status_code=403, detail="이 계정에서 사용할 수 없는 개인화 음성입니다.")
         if conversation["output_audio_path"]:
-            return MessageResponse(
-                id=conversation["id"], user_text=conversation["user_text"],
-                assistant_text=conversation["assistant_text"],
+            return message_response(
+                conversation,
                 audio_url=pipeline.public_audio_url(conversation["output_audio_path"]),
-                created_at=conversation["created_at"],
             )
         assistant_text = str(conversation["assistant_text"] or "").strip()
         if not assistant_text:
             raise HTTPException(status_code=409, detail="답변 생성이 끝난 뒤 음성을 만들어 주세요.")
-        audio_url = await pipeline.synthesize(assistant_text, payload.voice_id)
+        character_cue = stored_character_cue(conversation)
+        audio_url = await pipeline.synthesize(
+            assistant_text, payload.voice_id, character_cue["voice_style"],
+        )
         if not audio_url:
             raise HTTPException(status_code=503, detail="음성을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.")
         try:
@@ -941,11 +948,8 @@ async def synthesize_message_audio(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if updated is None:
             raise HTTPException(status_code=409, detail="답변이 변경되었습니다. 새 답변에서 다시 시도해 주세요.")
-        return MessageResponse(
-            id=updated["id"], user_text=updated["user_text"],
-            assistant_text=updated["assistant_text"],
-            audio_url=pipeline.public_audio_url(updated["output_audio_path"]),
-            created_at=updated["created_at"],
+        return message_response(
+            updated, audio_url=pipeline.public_audio_url(updated["output_audio_path"]),
         )
 
 

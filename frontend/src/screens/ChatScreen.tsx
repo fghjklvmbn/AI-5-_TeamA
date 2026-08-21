@@ -1,4 +1,3 @@
-import { useAudioPlayer } from 'expo-audio';
 import * as DocumentPicker from 'expo-document-picker';
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -15,9 +14,11 @@ import {
 } from 'react-native';
 
 import { api } from '../api';
-import { playWebAudio, unlockWebAudio } from '../audioPlayback';
+import { unlockWebAudio } from '../audioPlayback';
 import { MarkdownMessage } from '../components/MarkdownMessage';
 import { ConversationModeTabs } from '../components/ConversationModeTabs';
+import { MessageAudioButton } from '../components/MessageAudioButton';
+import { characterCueForPlayback, useCharacterAudioState } from '../hooks/useCharacterAudioState';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
 import type { Attachment, CharacterActivity, CharacterId, ConversationMode, Message, Persona, ReasoningEffort, Session } from '../types';
@@ -73,36 +74,6 @@ function upsertMessage(currentMessages: Message[], updatedMessage: Message): Mes
   ));
 }
 
-function AudioButton({ uri, onError, autoPlay = false }: { uri: string; onError: (message: string) => void; autoPlay?: boolean }) {
-  const { colors } = useTheme();
-  const styles = createStyles(colors);
-  const player = useAudioPlayer(uri);
-  const autoPlayedUriRef = useRef<string | undefined>(undefined);
-  const play = useCallback(async () => {
-    try {
-      if (Platform.OS === 'web') {
-        await playWebAudio(uri);
-        return;
-      }
-      await player.seekTo(0);
-      player.play();
-    } catch (reason) {
-      onError(reason instanceof Error ? reason.message : '음성을 재생하지 못했어요.');
-    }
-  }, [onError, player, uri]);
-
-  useEffect(() => {
-    if (!autoPlay || autoPlayedUriRef.current === uri) return;
-    autoPlayedUriRef.current = uri;
-    void play();
-  }, [autoPlay, play, uri]);
-  return (
-    <Pressable onPress={() => void play()} style={styles.audioButton}>
-      <Text style={styles.audioText}>▶ 음성으로 듣기</Text>
-    </Pressable>
-  );
-}
-
 export function ChatScreen({
   token,
   isActive,
@@ -142,7 +113,7 @@ export function ChatScreen({
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string>();
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<string>();
   const [generatingAudioMessageId, setGeneratingAudioMessageId] = useState<string>();
-  const [characterSpeaking, setCharacterSpeaking] = useState(false);
+  const characterAudio = useCharacterAudioState();
   const generatingAudioMessageIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView>(null);
   const activeSessionIdRef = useRef(activeSessionId);
@@ -163,16 +134,10 @@ export function ChatScreen({
     ? 'listening'
     : voiceProcessing || busy
       ? 'thinking'
-      : characterSpeaking
+      : characterAudio.playing
         ? 'speaking'
         : 'idle';
-
-  useEffect(() => {
-    if (!autoPlayMessageId) return;
-    setCharacterSpeaking(true);
-    const timer = setTimeout(() => setCharacterSpeaking(false), 8_000);
-    return () => clearTimeout(timer);
-  }, [autoPlayMessageId]);
+  const characterCue = characterCueForPlayback(messages, characterAudio.messageId);
 
   const acquireContextMutation = (): symbol | undefined => {
     if (contextMutationLockRef.current) return undefined;
@@ -734,7 +699,7 @@ export function ChatScreen({
 
       <View style={[styles.conversationArea, conversationMode === 'hybrid' && styles.hybridArea]}>
       {conversationMode !== 'chat' && <Suspense fallback={<View style={styles.characterLoading}><ActivityIndicator color={colors.primary} /><Text style={styles.characterLoadingText}>캐릭터 영역을 준비하고 있어요…</Text></View>}>
-        <CharacterStage characterId={characterId} activity={characterActivity} onCharacterChange={onCharacterChange} />
+        <CharacterStage characterId={characterId} activity={characterActivity} cue={characterCue} onCharacterChange={onCharacterChange} />
       </Suspense>}
       {conversationMode !== 'live' && <ScrollView
         style={styles.messagePane}
@@ -760,7 +725,7 @@ export function ChatScreen({
                   </MarkdownMessage>
                 )}
                 {!!message.audio_url
-                  ? <AudioButton uri={message.audio_url} onError={setError} autoPlay={autoPlayMessageId === message.id} />
+                  ? <MessageAudioButton uri={message.audio_url} messageId={message.id} onError={setError} autoPlay={autoPlayMessageId === message.id} />
                   : !!message.assistant_text.trim() && !message.id.startsWith('pending-') && (
                     <Pressable
                       accessibilityLabel="답변 음성으로 듣기"

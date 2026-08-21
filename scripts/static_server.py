@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import re
 import sys
+import threading
+from email.utils import formatdate
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -9,6 +13,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 class MemoryPalStaticHandler(SimpleHTTPRequestHandler):
     base_prefix = ""
+    _compressed_cache: dict[tuple[str, int, int], bytes] = {}
+    _compressed_cache_lock = threading.Lock()
+    _hashed_asset = re.compile(r"(?:^|[-.])[0-9a-f]{16,}\.", re.IGNORECASE)
+    _compressible_suffixes = {".css", ".html", ".js", ".json", ".svg", ".txt"}
     favicon = (
         b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
         b'<rect width="64" height="64" rx="16" fill="#6C63FF"/>'
@@ -41,15 +49,72 @@ class MemoryPalStaticHandler(SimpleHTTPRequestHandler):
             self.wfile.write(self.favicon)
         return True
 
+    def end_headers(self) -> None:
+        buffered = b"".join(getattr(self, "_headers_buffer", []))
+        if b"cache-control:" not in buffered.lower():
+            request_path = urlsplit(self.path).path
+            filename = Path(request_path).name
+            if filename == "index.html" or request_path.endswith("/"):
+                self.send_header("Cache-Control", "no-cache")
+            elif self._hashed_asset.search(filename):
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        super().end_headers()
+
+    def _compressed_file(self, path: Path) -> bytes:
+        handler_type = type(self)
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        with handler_type._compressed_cache_lock:
+            cached = handler_type._compressed_cache.get(key)
+        if cached is not None:
+            return cached
+        compressed = gzip.compress(path.read_bytes(), compresslevel=6)
+        with handler_type._compressed_cache_lock:
+            handler_type._compressed_cache = {
+                cached_key: value
+                for cached_key, value in handler_type._compressed_cache.items()
+                if cached_key[0] != str(path)
+            }
+            handler_type._compressed_cache[key] = compressed
+        return compressed
+
+    def _serve_compressed(self) -> bool:
+        accepted = self.headers.get("Accept-Encoding", "").lower()
+        if "gzip" not in accepted:
+            return False
+        path = Path(self.translate_path(self.path))
+        if path.is_dir():
+            path = next((path / name for name in ("index.html", "index.htm") if (path / name).is_file()), path)
+        if not path.is_file() or path.suffix.lower() not in self._compressible_suffixes:
+            return False
+        payload = self._compressed_file(path)
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(str(path)))
+        self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Last-Modified", formatdate(path.stat().st_mtime, usegmt=True))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(payload)
+        return True
+
     def do_GET(self) -> None:
         if self._serve_favicon():
             return
-        self._strip_prefix(); super().do_GET()
+        self._strip_prefix()
+        if not self._serve_compressed():
+            super().do_GET()
 
     def do_HEAD(self) -> None:
         if self._serve_favicon():
             return
-        self._strip_prefix(); super().do_HEAD()
+        self._strip_prefix()
+        if not self._serve_compressed():
+            super().do_HEAD()
 
 
 def main() -> None:

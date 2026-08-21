@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useTheme, type ThemeColors } from '../theme';
 
@@ -50,7 +50,7 @@ export function LoadingView({ message, progress }: LoadingViewProps) {
   return (
     <View style={styles.container}>
       <View style={styles.loadingBox}>
-        <ActivityIndicator size="large" color={colors.primary} />
+        <ActivityIndicator testID="loading-indicator" size="large" color={colors.primary} />
         
         {message && (
           <Text style={styles.loadingText}>{message}</Text>
@@ -58,7 +58,8 @@ export function LoadingView({ message, progress }: LoadingViewProps) {
         
         {progress !== null && progress !== undefined && (
           <View style={styles.progressContainer}>
-            <View 
+            <View
+              testID="progress-bar"
               style={[styles.progressBar, { width: `${Math.min(100, Math.max(0, progress))}%` }]} 
             />
           </View>
@@ -84,7 +85,7 @@ export function SuccessView({ message, onContinue }: SuccessViewProps) {
     <View style={styles.container}>
       <View style={[styles.successBox, styles.successPrimary]}>
         <Text style={styles.successIcon}>✅</Text>
-        <Text style={styles.successText}>{message}</Text>
+        <Text style={styles.successText}>{message.trim()}</Text>
       </View>
       
       {onContinue && (
@@ -180,11 +181,11 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   
   // 버튼 텍스트
   confirmButtonText: { color: colors.surface, fontWeight: '600' },
-  cancelButtonText: { color: colors.text, fontWeight: '600' },
+  cancelButtonText: { color: colors.ink, fontWeight: '600' },
   dangerConfirmText: { color: '#DC3545' },
   
   retryContainer: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginTop: 12 },
-  retryLabel: { color: colors.text, fontSize: 12 },
+  retryLabel: { color: colors.ink, fontSize: 12 },
   retrySubtext: { color: colors.muted, fontSize: 10 },
   retryButton: { backgroundColor: colors.primarySoft, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
   retryButtonText: { color: colors.primaryDark, fontWeight: '600', fontSize: 14 },
@@ -192,6 +193,6 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   continueButton: { backgroundColor: colors.primary, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   continueButtonText: { color: colors.surface, fontWeight: '600', fontSize: 16 },
   
-  title: { textAlign: 'center', fontSize: 18, fontWeight: 'bold', color: colors.text, marginBottom: 8 },
+  title: { textAlign: 'center', fontSize: 18, fontWeight: 'bold', color: colors.ink, marginBottom: 8 },
   message: { textAlign: 'center', fontSize: 14, color: colors.muted, marginBottom: 16 },
 });

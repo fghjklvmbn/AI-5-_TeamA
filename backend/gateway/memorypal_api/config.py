@@ -158,6 +158,7 @@ class Settings:
     llm_default_model: str
     llm_companion_model: str
     llm_embedding_model: str
+    llm_character_cue_enabled: bool
     lmstudio_model_root: Path | None
     lmstudio_cli: str
     huggingface_token: str
@@ -220,6 +221,9 @@ def load_settings() -> Settings:
         llm_embedding_model=os.getenv(
             "MEMORYPAL_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5",
         ),
+        llm_character_cue_enabled=os.getenv(
+            "MEMORYPAL_LLM_CHARACTER_CUE_ENABLED", "true",
+        ).strip().casefold() not in {"0", "false", "no", "off"},
         lmstudio_model_root=(
             _path("MEMORYPAL_LMSTUDIO_MODEL_ROOT", os.getenv("MEMORYPAL_LMSTUDIO_MODEL_ROOT", ""))
             if os.getenv("MEMORYPAL_LMSTUDIO_MODEL_ROOT", "").strip()

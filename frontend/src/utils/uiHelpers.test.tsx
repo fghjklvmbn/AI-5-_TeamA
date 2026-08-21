@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, fireEvent } from '@testing-library/react-native';
+import { fireEvent, render, screen } from '@testing-library/react-native';
 import { 
   ErrorView, 
   LoadingView, 
@@ -113,7 +113,7 @@ describe('UI Helpers Components', () => {
       );
 
       const progressBar = screen.getByTestId('progress-bar');
-      expect(progressBar.props.style).toContainObject({ width: '0%' });
+      expect(progressBar).toHaveStyle({ width: '0%' });
     });
 
     // 5. 진행률 100 검증
@@ -123,7 +123,7 @@ describe('UI Helpers Components', () => {
       );
 
       const progressBar = screen.getByTestId('progress-bar');
-      expect(progressBar.props.style).toContainObject({ width: '100%' });
+      expect(progressBar).toHaveStyle({ width: '100%' });
     });
 
     // 6. null 진행률 처리 (progress bar 숨김)
@@ -163,7 +163,7 @@ describe('UI Helpers Components', () => {
       );
 
       const progressBar = screen.getByTestId('progress-bar');
-      expect(progressBar.props.style).toContainObject({ width: '0%' });
+      expect(progressBar).toHaveStyle({ width: '0%' });
     });
   });
 
@@ -236,7 +236,7 @@ describe('UI Helpers Components', () => {
       );
 
       const message = screen.getByText(/저장 완료/);
-      expect(message.props.text).toBe('저장 완료');
+      expect(message.props.children).toBe('저장 완료');
     });
   });
 

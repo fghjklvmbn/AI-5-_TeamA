@@ -1,12 +1,8 @@
 import React from 'react';
-import { render, fireEvent } from '@testing-library/react-native';
+import { fireEvent, render, screen } from '@testing-library/react-native';
 import { Button } from './Button';
 
 describe('Button Component', () => {
-  beforeEach(() => {
-    jest.resetModules();
-  });
-
   // 1. 기본 버튼 렌더링 - label 표시 검증
   it('renders with label correctly', () => {
     const onPress = jest.fn();
@@ -32,9 +28,9 @@ describe('Button Component', () => {
       />
     );
 
-    const button = screen.getByText('확인');
+    const button = screen.getByRole('button');
     // 스타일 객체를 확인하기 위해 스타일 추출 (간접적 확인)
-    expect(button.props.style).toContainObject({ backgroundColor: expect.any(String) });
+    expect(button).toHaveStyle({ backgroundColor: expect.any(String) });
   });
 
   // 3. secondary variant 스타일 적용 검증
@@ -81,8 +77,8 @@ describe('Button Component', () => {
       />
     );
 
-    const button = screen.getByText('확인');
-    expect(button.props.disabled).toBe(true);
+    const button = screen.getByRole('button');
+    expect(button.props.accessibilityState.disabled).toBe(true);
   });
 
   // 6. loading 상태 처리 검증 (ActivityIndicator 표시)
@@ -196,7 +192,7 @@ describe('Button Component', () => {
       />
     );
 
-    const button = screen.getByText('확인');
+    const button = screen.getByRole('button');
     expect(button.props.accessibilityRole).toBe('button');
   });
 
@@ -212,7 +208,7 @@ describe('Button Component', () => {
       />
     );
 
-    const button = screen.getByText('확인');
+    const button = screen.getByRole('button');
     expect(button.props.accessibilityState.disabled).toBe(true);
   });
 
@@ -243,6 +239,6 @@ describe('Button Component', () => {
     );
 
     const button = screen.getByText('매우 긴 버튼 텍스트입니다.');
-    expect(button.props.numberOfLines).toBeDefined();
+    expect(button.props.numberOfLines).toBe(1);
   });
 });

@@ -24,6 +24,7 @@ export type Message = {
   assistant_text: string;
   audio_url?: string | null;
   created_at: string;
+  character_cue?: CharacterCue | null;
 };
 
 export type ChatResponse = {
@@ -63,9 +64,16 @@ export type Persona = 'default' | 'emotional_companion' | 'none';
 
 export type ConversationMode = 'live' | 'chat' | 'hybrid';
 
-export type CharacterId = 'haru' | 'nari';
+export type { CharacterId } from './character/ids';
 
 export type CharacterActivity = 'idle' | 'listening' | 'thinking' | 'speaking';
+
+export type CharacterCue = {
+  emotion: 'neutral' | 'happy' | 'sad' | 'concerned' | 'excited';
+  intensity: number;
+  gesture: 'idle' | 'nod' | 'comfort' | 'celebrate';
+  voice_style: 'calm' | 'warm' | 'bright';
+};
 
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 
@@ -154,10 +162,8 @@ export type PortraitResponse = {
 };
 
 export type VoiceStatus = {
-  id: string;
-  voice_id: string;
-  status: 'uploaded' | 'registered' | 'provisional';
-  created_at: string;
+  has_personalized_voice: boolean;
+  personalized_voice_count: number;
 };
 
 // API 타입

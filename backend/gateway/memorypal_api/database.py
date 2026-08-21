@@ -158,6 +158,7 @@ class Database:
                     assistant_text TEXT NOT NULL,
                     input_audio_path TEXT,
                     output_audio_path TEXT,
+                    character_cue_json TEXT,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS memories (
@@ -423,6 +424,11 @@ class Database:
                 db.execute("ALTER TABLE event_outbox ADD COLUMN locked_by TEXT")
             if "locked_until" not in outbox_columns:
                 db.execute("ALTER TABLE event_outbox ADD COLUMN locked_until TEXT")
+            conversation_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(conversations)").fetchall()
+            }
+            if "character_cue_json" not in conversation_columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN character_cue_json TEXT")
             user_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()
             }
@@ -1145,6 +1151,7 @@ class Database:
         assistant_text: str,
         input_audio_path: str | None = None,
         output_audio_path: str | None = None,
+        character_cue_json: str | None = None,
         expected_auth_version: int | None = None,
     ) -> sqlite3.Row:
         conversation_id = str(uuid.uuid4())
@@ -1154,7 +1161,10 @@ class Database:
             if expected_auth_version is not None:
                 self._require_account_fence(db, user_id, expected_auth_version)
             db.execute(
-                "INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO conversations ("
+                "id, session_id, user_id, user_text, assistant_text, input_audio_path, "
+                "output_audio_path, character_cue_json, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conversation_id,
                     session_id,
@@ -1163,6 +1173,7 @@ class Database:
                     assistant_text,
                     input_audio_path,
                     output_audio_path,
+                    character_cue_json,
                     now,
                 ),
             )
@@ -1235,15 +1246,16 @@ class Database:
     def update_conversation_response(
         self, user_id: str, conversation_id: str, assistant_text: str,
         output_audio_path: str | None,
+        character_cue_json: str | None = None,
         expected_auth_version: int | None = None,
     ) -> sqlite3.Row | None:
         with self.transaction() as db:
             if expected_auth_version is not None:
                 self._require_account_fence(db, user_id, expected_auth_version)
             updated = db.execute(
-                "UPDATE conversations SET assistant_text = ?, output_audio_path = ? "
+                "UPDATE conversations SET assistant_text = ?, output_audio_path = ?, character_cue_json = ? "
                 "WHERE id = ? AND user_id = ?",
-                (assistant_text, output_audio_path, conversation_id, user_id),
+                (assistant_text, output_audio_path, character_cue_json, conversation_id, user_id),
             ).rowcount
             if not updated:
                 return None

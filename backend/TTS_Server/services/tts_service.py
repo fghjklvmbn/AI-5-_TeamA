@@ -1,9 +1,11 @@
+import inspect
 import os
 import re
 import warnings
-import torch
 import uuid
+
 import soundfile as sf
+import torch
 
 from collections import OrderedDict
 from threading import Lock
@@ -50,6 +52,12 @@ def _reference_audio_roots():
 
 
 class TTSService:
+
+    _VOICE_STYLE_INSTRUCTIONS = {
+        "calm": "차분하고 안정적인 속도와 억양으로 말해 주세요.",
+        "warm": "따뜻하고 공감하는 부드러운 억양으로 말해 주세요.",
+        "bright": "밝고 생기 있는 억양으로 자연스럽게 말해 주세요.",
+    }
 
     def __init__(self):
 
@@ -221,23 +229,29 @@ class TTSService:
         text,
         ref_audio,
         ref_text,
-        language="korean"
+        language="korean",
+        voice_style="calm",
     ):
 
         local_ref_audio = self._localize_ref_audio(ref_audio)
 
         with self._inference_lock:
+            style = voice_style if voice_style in self._VOICE_STYLE_INSTRUCTIONS else "calm"
+            style_instruction = self._VOICE_STYLE_INSTRUCTIONS[style]
             if self.engine == "faster":
+                generate = self.model.generate_voice_clone
+                generation_options = {
+                    "text": text,
+                    "language": language,
+                    "ref_audio": local_ref_audio,
+                    "ref_text": ref_text,
+                    "non_streaming_mode": True,
+                    "max_new_tokens": self._max_new_tokens(text),
+                }
+                if "instruct" in inspect.signature(generate).parameters:
+                    generation_options["instruct"] = style_instruction
                 wavs, sr = (
-                    self.model
-                    .generate_voice_clone(
-                        text=text,
-                        language=language,
-                        ref_audio=local_ref_audio,
-                        ref_text=ref_text,
-                        non_streaming_mode=True,
-                        max_new_tokens=self._max_new_tokens(text)
-                    )
+                    generate(**generation_options)
                 )
             else:
                 prompt_key = (
@@ -264,14 +278,17 @@ class TTSService:
                     self._prompt_cache.move_to_end(prompt_key)
 
                 with torch.inference_mode():
+                    generate = self.model.generate_voice_clone
+                    generation_options = {
+                        "text": text,
+                        "language": language,
+                        "voice_clone_prompt": voice_prompt,
+                        "non_streaming_mode": True,
+                    }
+                    if "instruct" in inspect.signature(generate).parameters:
+                        generation_options["instruct"] = style_instruction
                     wavs, sr = (
-                        self.model
-                        .generate_voice_clone(
-                            text=text,
-                            language=language,
-                            voice_clone_prompt=voice_prompt,
-                            non_streaming_mode=True
-                        )
+                        generate(**generation_options)
                     )
 
         output_dir = (
