@@ -7,7 +7,7 @@ import {
 } from 'expo-audio';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { api } from '../api';
+import { api, type AIPipelineTrace } from '../api';
 
 const RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
@@ -97,7 +97,7 @@ export function useLiveRecorder(token: string) {
     }
   }, [recorder, restorePlaybackMode]);
 
-  const stop = useCallback(async () => {
+  const stop = useCallback(async (trace?: AIPipelineTrace) => {
     if (transitionRef.current || !recordingRef.current) return '';
     const operationVersion = ++operationVersionRef.current;
     let completeOperation: () => void = () => undefined;
@@ -126,7 +126,7 @@ export function useLiveRecorder(token: string) {
       transcriptionControllerRef.current = controller;
       let transcript: string;
       try {
-        transcript = (await api.transcribe(token, uri, controller.signal)).trim();
+        transcript = (await api.transcribe(token, uri, controller.signal, trace)).trim();
       } catch (reason) {
         if (!mountedRef.current || operationVersionRef.current !== operationVersion) return '';
         throw reason;

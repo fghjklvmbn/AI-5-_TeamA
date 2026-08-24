@@ -19,6 +19,8 @@ from typing import Any
 import psutil
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
+from lmstudio_logs import LMStudioLogCollector, LogEventStore
+
 
 INTERVAL_SECONDS = max(5, int(os.getenv("MEMORYPAL_MONITOR_INTERVAL_SECONDS", "15")))
 SERVICE_NAME = os.getenv("MEMORYPAL_MONITOR_SERVICE", "service").strip().lower()
@@ -29,6 +31,20 @@ PROCESS_NAMES = tuple(
 HEALTH_URL = os.getenv("MEMORYPAL_MONITOR_HEALTH_URL", "").strip()
 GPU_ENABLED = os.getenv("MEMORYPAL_MONITOR_GPU", "false").strip().casefold() in {"1", "true", "yes", "on"}
 LOG_PATH = Path(os.getenv("MEMORYPAL_MONITOR_LOG_PATH", f"logs/{SERVICE_NAME}.hardware.jsonl")).resolve()
+LMSTUDIO_LOG_ENABLED = (
+    SERVICE_NAME == "llm"
+    and os.getenv("MEMORYPAL_LMSTUDIO_LOG_ENABLED", "true").strip().casefold() in {"1", "true", "yes", "on"}
+)
+LMSTUDIO_LOG_PATH = Path(
+    os.getenv("MEMORYPAL_LMSTUDIO_LOG_PATH", "logs/llm.lmstudio.jsonl")
+).resolve()
+LMSTUDIO_LOG_LIMIT = max(100, int(os.getenv("MEMORYPAL_LMSTUDIO_LOG_LIMIT", "2000")))
+LMSTUDIO_LMS_CLI = os.getenv("MEMORYPAL_LMS_CLI", "lms").strip() or "lms"
+LMSTUDIO_LOG_SOURCES = tuple(
+    value.strip().casefold()
+    for value in os.getenv("MEMORYPAL_LMSTUDIO_LOG_SOURCES", "server,runtime,model").split(",")
+    if value.strip().casefold() in {"server", "runtime", "model"}
+)
 TOKEN = os.getenv("MEMORYPAL_MODEL_SERVICE_TOKEN", "").strip()
 if not TOKEN:
     token_file = os.getenv("MEMORYPAL_MODEL_SERVICE_TOKEN_FILE", "").strip()
@@ -242,6 +258,19 @@ class HardwareSampler:
 
 
 sampler = HardwareSampler()
+lmstudio_log_store = LogEventStore(LMSTUDIO_LOG_PATH, LMSTUDIO_LOG_LIMIT)
+lmstudio_log_collector = (
+    LMStudioLogCollector(LMSTUDIO_LMS_CLI, lmstudio_log_store, LMSTUDIO_LOG_SOURCES)
+    if LMSTUDIO_LOG_ENABLED else None
+)
+
+
+def public_log_health() -> dict[str, Any]:
+    if lmstudio_log_collector is None:
+        return {"enabled": False, "running": False}
+    status = lmstudio_log_collector.status()
+    states = [item.get("state") for item in status.get("sources", {}).values()]
+    return {"enabled": True, "running": bool(states) and any(state == "running" for state in states)}
 
 
 def require_token(authorization: str = Header(default="")) -> None:
@@ -257,12 +286,16 @@ async def sampling_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if lmstudio_log_collector is not None:
+        lmstudio_log_collector.start()
     task = asyncio.create_task(sampling_loop())
     try:
         yield
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        if lmstudio_log_collector is not None:
+            await asyncio.to_thread(lmstudio_log_collector.stop)
 
 
 app = FastAPI(title="MemoryPal Hardware Monitor", version="1.0", lifespan=lifespan)
@@ -270,7 +303,10 @@ app = FastAPI(title="MemoryPal Hardware Monitor", version="1.0", lifespan=lifesp
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": SERVICE_NAME}
+    return {
+        "status": "ok", "service": SERVICE_NAME,
+        "lmstudio_logs": public_log_health(),
+    }
 
 
 @app.get("/v1/metrics/current", dependencies=[Depends(require_token)])
@@ -281,3 +317,27 @@ def current_metrics():
 @app.get("/v1/metrics/history", dependencies=[Depends(require_token)])
 def metric_history(limit: int = Query(default=60, ge=1, le=240)):
     return {"items": sampler.read_history(limit)}
+
+
+@app.get("/v1/logs/status", dependencies=[Depends(require_token)])
+def lmstudio_log_status():
+    if lmstudio_log_collector is None:
+        return {"enabled": False, "sources": {}, "latest_cursor": 0}
+    return lmstudio_log_collector.status()
+
+
+@app.get("/v1/logs/recent", dependencies=[Depends(require_token)])
+def lmstudio_recent_logs(
+    after_cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    source: str = Query(default="", pattern="^(|server|runtime|model)$"),
+    level: str = Query(default="", pattern="^(|trace|debug|info|warn|error|fatal)$"),
+    model_key: str = Query(default="", max_length=300),
+):
+    if lmstudio_log_collector is None:
+        return {"items": [], "latest_cursor": 0, "next_cursor": after_cursor, "enabled": False}
+    result = lmstudio_log_store.read(
+        after_cursor=after_cursor, limit=limit, source=source, level=level, model_key=model_key,
+    )
+    result["enabled"] = True
+    return result

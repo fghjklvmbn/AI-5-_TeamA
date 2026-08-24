@@ -162,6 +162,44 @@ def test_allowlisted_admin_receives_only_privacy_safe_operational_data(tmp_path)
         assert "reason" not in transitions.text
 
 
+def test_admin_can_read_sanitized_incremental_llm_logs(tmp_path):
+    app = create_app(_settings(tmp_path, admin_emails=("admin@example.com",)))
+
+    async def logs(**filters):
+        assert filters == {
+            "after_cursor": 40, "limit": 25, "source": "runtime",
+            "level": "error", "model_key": "qwen3.5",
+        }
+        return {
+            "enabled": True, "available": True, "latest_cursor": 41, "next_cursor": 41,
+            "items": [{
+                "cursor": 41, "source": "runtime", "level": "error",
+                "event_type": "model_load_failed", "model_key": "qwen3.5-4b",
+                "title": "모델 로드 실패", "detail": "Engine protocol startup was aborted.",
+                "importance": "critical",
+                "message": "Engine protocol startup was aborted.", "stats": {},
+                "occurred_at": "2026-08-24T00:00:00+00:00",
+                "output": "this field must not escape the response model",
+            }],
+        }
+
+    app.state.hardware_monitor.llm_logs = logs
+    with TestClient(app) as client:
+        registered = _register(client, "admin@example.com")
+        response = client.get(
+            "/v1/admin/services/llm/logs",
+            params={
+                "after_cursor": 40, "limit": 25, "source": "runtime",
+                "level": "error", "model_key": "qwen3.5",
+            },
+            headers=_headers(registered),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["event_type"] == "model_load_failed"
+    assert "must not escape" not in response.text
+
+
 def test_database_admin_and_correlation_timeline(tmp_path):
     app = create_app(_settings(tmp_path))
     with TestClient(app) as client:

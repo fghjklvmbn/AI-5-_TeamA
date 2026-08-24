@@ -4,8 +4,6 @@ import asyncio
 import hashlib
 import json
 import re
-import shutil
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from ..config import Settings
+from .model_usage import ModelInUseError, ModelUsageTracker
 
 
 class ModelManagerError(RuntimeError):
@@ -37,15 +36,22 @@ _OPAQUE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$")
 class ModelManager:
     """Authenticated Gateway adapter around LM Studio v1 and Hugging Face APIs."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, model_usage: ModelUsageTracker | None = None):
         self.settings = settings
+        self.model_usage = model_usage
         parsed = urlsplit(settings.llm_url)
         path = parsed.path.rstrip("/")
         if path.endswith("/v1"):
             path = path[:-3]
         self.native_base = urlunsplit(parsed._replace(path=f"{path}/api/v1", query="", fragment=""))
         self.state_path = settings.database_path.parent / "model_downloads.json"
+        self.preference_path = settings.database_path.parent / "model_preferences.json"
         self._state_lock = asyncio.Lock()
+        self._preference_lock = asyncio.Lock()
+        # LM Studio owns one shared pool of loaded models. Serialize model
+        # transitions so simultaneous persona requests cannot unload and load
+        # the same instances in opposite directions.
+        self._activation_lock = asyncio.Lock()
         self.quota_bytes = 10 * 1024**3
         self.reservation_bytes = 3 * 1024**3
         self.max_loaded_models = 3
@@ -74,7 +80,36 @@ class ModelManager:
 
     @staticmethod
     def _model_identity(value: str) -> str:
-        return re.sub(r"[^a-z0-9]", "", value.casefold()).replace("gguf", "")
+        value = value.casefold().replace(".gguf", "").replace("gguf", "")
+        # LM Studio drops repository suffixes such as Q4_K_M when it creates a
+        # local model key. Compare the semantic model name, not packaging data.
+        value = re.sub(r"(?:^|[-_.])q\d+(?:[-_.]?[a-z0-9]+)*$", "", value)
+        return re.sub(r"[^a-z0-9]", "", value)
+
+    @classmethod
+    def _model_identities(cls, model: dict[str, Any]) -> set[str]:
+        return {
+            identity
+            for value in (model.get("key"), model.get("display_name"))
+            if (identity := cls._model_identity(str(value or "")))
+        }
+
+    @staticmethod
+    def _normalized_model(model: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(model)
+        quantization = normalized.get("quantization")
+        if isinstance(quantization, dict):
+            normalized["quantization"] = str(quantization.get("name") or "") or None
+        return normalized
+
+    @classmethod
+    def _matches_identity(cls, model: dict[str, Any], identities: set[str]) -> bool:
+        candidates = cls._model_identities(model)
+        return any(
+            owned == candidate or owned in candidate or candidate in owned
+            for owned in identities if owned
+            for candidate in candidates if candidate
+        )
 
     @classmethod
     def _allowed_llm(cls, item: dict[str, Any]) -> bool:
@@ -126,18 +161,10 @@ class ModelManager:
             error = None
         except ModelManagerError as exc:
             online, count, error = False, 0, str(exc)
-        root = self.settings.lmstudio_model_root
-        delete_supported = bool(
-            root is not None and root.is_dir() and shutil.which(self.settings.lmstudio_cli)
-        )
         gpu_memory = await self._gpu_memory_status()
         return {
             "server_online": online,
             "model_count": count,
-            "delete_supported": delete_supported,
-            "delete_reason": None if delete_supported else (
-                "Gateway가 LM Studio 모델 폴더와 lms CLI를 함께 사용할 수 있어야 삭제할 수 있습니다."
-            ),
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "error": error,
             **gpu_memory,
@@ -186,8 +213,12 @@ class ModelManager:
     async def user_models(self, user_id: str) -> dict[str, Any]:
         payload = await self.models()
         state = self._read_state()
-        owned = {self._model_identity(str(job.get("model") or "").split("/", 1)[-1]) for job in state.get(user_id, []) if job.get("status") in {"completed", "complete", "downloaded"}}
-        default = self.settings.llm_default_model.casefold()
+        owned = {
+            self._model_identity(str(job.get("model") or "").split("/", 1)[-1])
+            for job in state.get(user_id, [])
+            if str(job.get("status") or "").casefold() in {"completed", "complete", "downloaded"}
+        }
+        default = {self._model_identity(self.settings.llm_default_model)}
         visible = []
         for model in payload.get("models") or []:
             key = str(model.get("key") or ""); text = f"{key} {model.get('display_name') or ''}".casefold()
@@ -195,10 +226,162 @@ class ModelManager:
                 continue
             if self.settings.llm_companion_model.casefold() in text:
                 continue
-            identity = self._model_identity(f"{key} {model.get('display_name') or ''}")
-            if default in text or any(name and (name in identity or identity in name) for name in owned):
-                visible.append(model)
+            if self._matches_identity(model, default) or self._matches_identity(model, owned):
+                normalized = self._normalized_model(model)
+                normalized["processing"] = bool(
+                    self.model_usage and self.model_usage.is_active(key)
+                )
+                visible.append(normalized)
         return {"models": visible}
+
+    def _read_preferences(self) -> dict[str, str]:
+        try:
+            value = json.loads(self.preference_path.read_text(encoding="utf-8"))
+            return {
+                str(user_id): str(model_key)
+                for user_id, model_key in value.items()
+                if isinstance(user_id, str) and isinstance(model_key, str) and model_key
+            } if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write_preferences(self, preferences: dict[str, str]) -> None:
+        self.preference_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(dir=self.preference_path.parent, prefix="model-preferences-", suffix=".tmp")
+        try:
+            with open(fd, "w", encoding="utf-8", closefd=True) as handle:
+                json.dump(preferences, handle, ensure_ascii=False)
+            Path(name).replace(self.preference_path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+
+    async def selected_model(self, user_id: str, persona: str = "default") -> dict[str, Any]:
+        if persona == "emotional_companion":
+            selected = self.settings.llm_companion_model
+            payload = await self.models()
+            models = [self._normalized_model(item) for item in payload.get("models") or []]
+        else:
+            selected = self._read_preferences().get(user_id)
+            payload = await self.user_models(user_id)
+            models = payload.get("models") or []
+            keys = {str(item.get("key") or "") for item in models}
+            if selected not in keys:
+                selected = next((
+                    str(item.get("key") or "")
+                    for item in models
+                    if self._matches_identity(
+                        item, {self._model_identity(self.settings.llm_default_model)},
+                    )
+                ), None)
+            if not selected:
+                selected = next((
+                    str(item.get("key") or "")
+                    for item in models if item.get("loaded_instances")
+                ), None) or self.settings.llm_default_model
+        current = next(
+            (item for item in models if str(item.get("key") or "") == selected), None,
+        )
+        return {
+            "model_key": selected,
+            "display_name": str((current or {}).get("display_name") or selected or ""),
+            "loaded": bool((current or {}).get("loaded_instances")),
+        }
+
+    async def select_model(
+        self, user_id: str, model_key: str | None, persona: str = "none",
+    ) -> dict[str, Any]:
+        if model_key is not None:
+            model_key = self._validate_opaque(model_key, "모델 키")
+            await self.ensure_user_model(user_id, model_key)
+        async with self._preference_lock:
+            preferences = self._read_preferences()
+            if model_key:
+                preferences[user_id] = model_key
+            else:
+                preferences.pop(user_id, None)
+            await asyncio.to_thread(self._write_preferences, preferences)
+        return await self.selected_model(user_id, persona)
+
+    async def activate_persona(self, user_id: str, persona: str) -> dict[str, Any]:
+        """Load the model required by a selected persona before the next chat."""
+        if persona == "emotional_companion":
+            await self.ensure_companion_model()
+            return await self.selected_model(user_id, persona)
+        if persona not in {"default", "none"}:
+            raise ModelManagerError("지원하지 않는 페르소나입니다.")
+        selection = await self.selected_model(user_id, persona)
+        model_key = str(selection.get("model_key") or self.settings.llm_default_model)
+        await self.ensure_user_model(user_id, model_key)
+        return await self.selected_model(user_id, persona)
+
+    async def ensure_user_model(self, user_id: str, model_key: str) -> None:
+        model_key = self._validate_opaque(model_key, "모델 키")
+        visible = await self.user_models(user_id)
+        if not any(
+            str(model.get("key") or "") == model_key
+            for model in visible.get("models") or []
+        ):
+            raise ModelManagerConflict("이 계정에서 사용할 수 없는 모델입니다.")
+        current = next(
+            model for model in visible.get("models") or []
+            if str(model.get("key") or "") == model_key
+        )
+        if current.get("loaded_instances"):
+            return
+        await self.load(model_key, 40960)
+
+    async def ensure_companion_model(self) -> dict[str, Any]:
+        """Make the configured companion model the active LM Studio LLM.
+
+        The companion is intentionally hidden from direct model management,
+        so it cannot rely on a user pressing the load button. On the 6 GB LLM
+        host, unloading other resident LLMs first also avoids a failed implicit
+        auto-load when the combined model footprint exceeds available VRAM.
+        Embedding models are retained because RAG depends on them.
+        """
+        async with self._activation_lock:
+            available = await self.models()
+            models = available.get("models") or []
+            companion_key = self.settings.llm_companion_model
+            companion = next(
+                (
+                    model for model in models
+                    if str(model.get("key") or "").casefold() == companion_key.casefold()
+                ),
+                None,
+            )
+            if companion is None:
+                raise ModelManagerUnavailable(
+                    f"정서적 동반자 모델 '{companion_key}'을 LM Studio에서 찾을 수 없습니다."
+                )
+            if companion.get("loaded_instances"):
+                return {
+                    "already_loaded": True,
+                    "model_key": str(companion.get("key") or companion_key),
+                    "loaded_instances": companion.get("loaded_instances"),
+                }
+
+            for model in models:
+                key = str(model.get("key") or "")
+                text = f"{key} {model.get('display_name') or ''}".casefold()
+                if key.casefold() == companion_key.casefold():
+                    continue
+                if str(model.get("type") or "llm").casefold() == "embedding" or any(
+                    marker in text for marker in ("embedding", "embed-", "text-embedding")
+                ):
+                    continue
+                for instance in model.get("loaded_instances") or []:
+                    instance_id = str(instance.get("id") or "")
+                    if instance_id:
+                        await self.unload(instance_id)
+
+            return await self._request("POST", "/models/load", json_body={
+                "model": str(companion.get("key") or companion_key),
+                "context_length": 40960,
+                "flash_attention": True,
+                "offload_kv_cache_to_gpu": True,
+                "echo_load_config": True,
+            })
 
     async def ensure_loaded(self, model_key: str) -> None:
         model_key = self._validate_opaque(model_key, "모델 키")
@@ -281,8 +464,11 @@ class ModelManager:
                 record["job_id"] = f"existing-{hashlib.sha256(model_id.encode()).hexdigest()[:16]}"
                 record["status"] = "completed"
                 available = await self.models()
-                needle = re.sub(r"[^a-z0-9]", "", model_id.split("/", 1)[-1].casefold())
-                match = next((item for item in available.get("models") or [] if needle in re.sub(r"[^a-z0-9]", "", f"{item.get('key','')} {item.get('display_name','')}".casefold())), None)
+                identities = {self._model_identity(model_id.split("/", 1)[-1])}
+                match = next(
+                    (item for item in available.get("models") or [] if self._matches_identity(item, identities)),
+                    None,
+                )
                 if match:
                     record["total_size_bytes"] = int(match.get("size_bytes") or 0)
             jobs.append(record); state[user_id] = jobs; await asyncio.to_thread(self._write_state, state)
@@ -330,7 +516,10 @@ class ModelManager:
                     available = await self.models()
                     for job in missing_sizes:
                         owned = self._model_identity(str(job.get("model") or "").split("/", 1)[-1])
-                        match = next((item for item in available.get("models") or [] if owned and (owned in self._model_identity(f"{item.get('key','')} {item.get('display_name','')}") or self._model_identity(f"{item.get('key','')} {item.get('display_name','')}") in owned)), None)
+                        match = next(
+                            (item for item in available.get("models") or [] if self._matches_identity(item, {owned})),
+                            None,
+                        )
                         if match and match.get("size_bytes"):
                             job["total_size_bytes"] = int(match["size_bytes"])
                 except ModelManagerError:
@@ -346,6 +535,10 @@ class ModelManager:
 
     async def load(self, model_key: str, context_length: int) -> dict[str, Any]:
         model_key = self._validate_opaque(model_key, "모델 키")
+        async with self._activation_lock:
+            return await self._load(model_key, context_length)
+
+    async def _load(self, model_key: str, context_length: int) -> dict[str, Any]:
         available = await self.models()
         companion = self.settings.llm_companion_model.casefold()
         models = available.get("models") or []
@@ -382,54 +575,24 @@ class ModelManager:
 
     async def unload(self, instance_id: str) -> dict[str, Any]:
         instance_id = self._validate_opaque(instance_id, "모델 인스턴스 ID")
-        return await self._request("POST", "/models/unload", json_body={"instance_id": instance_id})
-
-    async def delete(self, model_key: str) -> dict[str, Any]:
-        model_key = self._validate_opaque(model_key, "모델 키")
-        root = self.settings.lmstudio_model_root
-        if root is None:
-            raise ModelManagerUnavailable("이 Gateway에서는 모델 파일 삭제가 설정되지 않았습니다.")
-        models = await self.models()
-        for model in models.get("models") or []:
-            if str(model.get("key") or "") == model_key and model.get("loaded_instances"):
-                raise ModelManagerConflict("로드된 모델은 먼저 언로드해야 삭제할 수 있습니다.")
-        target = await asyncio.to_thread(self._resolve_cli_model_path, model_key, root)
-        await asyncio.to_thread(target.unlink)
-        parent = target.parent
-        root_resolved = root.resolve()
-        while parent != root_resolved and parent.is_relative_to(root_resolved):
-            try:
-                parent.rmdir()
-            except OSError:
-                break
-            parent = parent.parent
-        return {"deleted": True, "model_key": model_key}
-
-    def _resolve_cli_model_path(self, model_key: str, root: Path) -> Path:
-        root = root.resolve()
-        if not root.is_dir():
-            raise ModelManagerUnavailable("설정된 LM Studio 모델 폴더를 찾을 수 없습니다.")
-        executable = shutil.which(self.settings.lmstudio_cli)
-        if executable is None:
-            raise ModelManagerUnavailable("Gateway에서 lms CLI를 찾을 수 없습니다.")
+        model_key = ""
+        if self.model_usage is not None:
+            available = await self.models()
+            for model in available.get("models") or []:
+                if any(
+                    str(instance.get("id") or "") == instance_id
+                    for instance in model.get("loaded_instances") or []
+                ):
+                    model_key = str(model.get("key") or "")
+                    break
         try:
-            completed = subprocess.run(
-                [executable, "ls", "--json"], check=True, capture_output=True,
-                text=True, timeout=20, shell=False,
+            if self.model_usage is not None and model_key:
+                async with self.model_usage.unloading(model_key):
+                    return await self._request(
+                        "POST", "/models/unload", json_body={"instance_id": instance_id},
+                    )
+            return await self._request(
+                "POST", "/models/unload", json_body={"instance_id": instance_id},
             )
-            payload = json.loads(completed.stdout)
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-            raise ModelManagerUnavailable("lms CLI로 모델 파일을 확인하지 못했습니다.") from exc
-        items = payload.get("models", []) if isinstance(payload, dict) else payload
-        for item in items if isinstance(items, list) else []:
-            if str(item.get("modelKey") or item.get("key") or "") != model_key:
-                continue
-            raw_path = item.get("path")
-            if not raw_path:
-                break
-            target = Path(str(raw_path))
-            target = target.resolve() if target.is_absolute() else (root / target).resolve()
-            if not target.is_relative_to(root) or not target.is_file():
-                raise ModelManagerUnavailable("모델 파일 경로가 허용된 폴더 밖에 있습니다.")
-            return target
-        raise ModelManagerUnavailable("lms CLI 목록에서 정확한 모델 파일을 찾지 못했습니다.")
+        except ModelInUseError as exc:
+            raise ModelManagerConflict(str(exc)) from exc

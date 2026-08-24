@@ -46,6 +46,27 @@ class MemoryEngineTests(unittest.TestCase):
         self.assertIn("재즈", result[0]["content"])
         self.assertEqual(self.engine.retrieve(self.other["id"], "산책", limit=5), [])
 
+    def test_memory_list_supports_literal_search_and_type_filter(self):
+        self.engine.remember(
+            self.user["id"], self.session["id"],
+            MemoryCandidate("preference", "재즈 100% 음악을 좋아해", 0.95, 0.8),
+        )
+        self.engine.remember(
+            self.user["id"], self.session["id"],
+            MemoryCandidate("schedule", "금요일 재즈 공연 예약", 0.9, 0.9),
+        )
+        self.engine.remember(
+            self.other["id"], None,
+            MemoryCandidate("preference", "다른 사용자의 재즈 기억", 0.9, 0.9),
+        )
+
+        preference_rows = self.db.list_memories(
+            self.user["id"], memory_type="preference", query="재즈",
+        )
+        self.assertEqual([row["memory_type"] for row in preference_rows], ["preference"])
+        self.assertEqual(len(self.db.list_memories(self.user["id"], query="100%")), 1)
+        self.assertEqual(self.db.list_memories(self.user["id"], query="다른 사용자"), [])
+
     def test_sensitive_information_is_not_stored(self):
         result = self.engine.remember(
             self.user["id"],
@@ -108,6 +129,46 @@ class MemoryEngineTests(unittest.TestCase):
         result = self.engine.retrieve(self.user["id"], "치과 예약은 언제야?")
         self.assertEqual(len(result), 1)
         self.assertIn("금요일", result[0]["content"])
+
+    def test_automatic_long_term_memory_requires_support_from_two_sessions(self):
+        candidate = MemoryCandidate(
+            "preference", "사용자는 따뜻한 라떼를 좋아해", 0.9, 0.8,
+        )
+        self.db.save_conversation(
+            self.user["id"], self.session["id"], "나는 따뜻한 라떼를 좋아해", "알겠어요.",
+        )
+
+        self.assertEqual(
+            self.engine.automatic_long_term_candidates(self.user["id"], [candidate]),
+            [],
+        )
+
+        second_session = self.db.create_session(self.user["id"])
+        self.db.save_conversation(
+            self.user["id"], second_session["id"], "오늘도 따뜻한 라떼를 좋아해", "기억할게요.",
+        )
+
+        self.assertEqual(
+            self.engine.automatic_long_term_candidates(self.user["id"], [candidate]),
+            [candidate],
+        )
+
+    def test_automatic_long_term_memory_rejects_ephemeral_types_and_weak_scores(self):
+        first = self.session
+        second = self.db.create_session(self.user["id"])
+        for session in (first, second):
+            self.db.save_conversation(
+                self.user["id"], session["id"], "금요일 오후에 치과 예약이 있어", "알겠어요.",
+            )
+        candidates = [
+            MemoryCandidate("schedule", "금요일 오후 치과 예약", 1.0, 1.0),
+            MemoryCandidate("preference", "사용자는 재즈를 좋아해", 0.7, 0.6),
+        ]
+
+        self.assertEqual(
+            self.engine.automatic_long_term_candidates(self.user["id"], candidates),
+            [],
+        )
 
 
 if __name__ == "__main__":

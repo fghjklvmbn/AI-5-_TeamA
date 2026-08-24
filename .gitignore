@@ -42,6 +42,12 @@ npm-debug.log*
 .runtime/
 .worktrees/
 
+# Local review, runtime logs, and verification scratch data
+.codex-review-pptx/
+.tmp/
+tmp/
+logs/
+
 # Editors and operating systems
 .DS_Store
 Thumbs.db

@@ -133,3 +133,28 @@ export type HardwareMonitorResponse = {
   services: HardwareMetric[];
   history: HardwareMetric[];
 };
+
+export type LlmLogSource = 'server' | 'runtime' | 'model';
+export type LlmLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+export type LlmLogEvent = {
+  cursor: number;
+  source: LlmLogSource;
+  level: LlmLogLevel;
+  event_type: string;
+  title: string;
+  model_key: string | null;
+  message: string;
+  detail: string | null;
+  importance: 'critical' | 'important' | 'routine' | 'debug';
+  stats: Record<string, unknown>;
+  occurred_at: string;
+};
+
+export type LlmLogResponse = {
+  enabled: boolean;
+  available: boolean;
+  items: LlmLogEvent[];
+  latest_cursor: number;
+  next_cursor: number;
+};

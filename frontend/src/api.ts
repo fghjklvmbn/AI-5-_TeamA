@@ -23,6 +23,23 @@ import type {
 
 const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? 'http://127.0.0.1:8010/v1').replace(/\/$/, '');
 
+export type AIPipelineStage = 'stt' | 'llm' | 'tts';
+export type AIPipelineTrace = { correlationId: string; stages: AIPipelineStage[] };
+
+export function createAIPipelineTrace(stages: AIPipelineStage[]): AIPipelineTrace {
+  const correlationId = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `pipeline-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return { correlationId, stages };
+}
+
+function pipelineHeaders(trace?: AIPipelineTrace): Record<string, string> {
+  return trace ? {
+    'X-Correlation-ID': trace.correlationId,
+    'X-AI-Pipeline-Stages': trace.stages.join(','),
+  } : {};
+}
+
 const AUDIO_EXTENSION_BY_MIME: Record<string, string> = {
   'audio/aac': 'aac',
   'audio/flac': 'flac',
@@ -152,6 +169,7 @@ async function streamingChatRequest(
   token: string,
   payload: Record<string, unknown>,
   onDelta: (delta: string) => void,
+  trace?: AIPipelineTrace,
 ): Promise<ChatResponse> {
   const response = await fetch(`${API_URL}/chat/messages/stream`, {
     method: 'POST',
@@ -159,6 +177,7 @@ async function streamingChatRequest(
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/x-ndjson',
+      ...pipelineHeaders(trace),
     },
     body: JSON.stringify(payload),
   });
@@ -300,6 +319,22 @@ export const api = {
   deleteAttachment(token: string, attachmentId: string) {
     return request<void>(`/attachments/${attachmentId}`, { method: 'DELETE' }, token);
   },
+  async openAttachment(token: string, attachment: Attachment) {
+    const response = await fetch(`${API_URL}/attachments/${encodeURIComponent(attachment.id)}/content`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error('첨부파일을 열지 못했어요.');
+    if (Platform.OS !== 'web') throw new Error('첨부파일 열기는 현재 웹에서 지원해요.');
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = attachment.filename;
+    anchor.rel = 'noopener noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30_000);
+  },
   chat(
     token: string,
     text: string,
@@ -312,11 +347,13 @@ export const api = {
     thinkingMode = false,
     reasoningEffort?: ReasoningEffort,
     modelKey?: string,
+    trace?: AIPipelineTrace,
   ) {
     return request<ChatResponse>(
       '/chat/messages',
       {
         method: 'POST',
+        headers: pipelineHeaders(trace),
         body: JSON.stringify({
           text,
           session_id: sessionId,
@@ -325,9 +362,9 @@ export const api = {
           casual_mode: casualMode,
           persona,
           internet_enabled: internetEnabled,
-          thinking_mode: thinkingMode,
-          reasoning_effort: reasoningEffort,
-          model_key: persona === 'none' ? modelKey : undefined,
+          thinking_mode: persona === 'emotional_companion' ? false : thinkingMode,
+          reasoning_effort: persona === 'emotional_companion' ? undefined : reasoningEffort,
+          model_key: persona !== 'emotional_companion' ? modelKey : undefined,
         }),
       },
       token,
@@ -346,6 +383,7 @@ export const api = {
     thinkingMode = false,
     reasoningEffort?: ReasoningEffort,
     modelKey?: string,
+    trace?: AIPipelineTrace,
   ) {
     return streamingChatRequest(token, {
       text,
@@ -355,10 +393,10 @@ export const api = {
       casual_mode: casualMode,
       persona,
       internet_enabled: internetEnabled,
-      thinking_mode: thinkingMode,
-      reasoning_effort: reasoningEffort,
-      model_key: persona === 'none' ? modelKey : undefined,
-    }, onDelta);
+      thinking_mode: persona === 'emotional_companion' ? false : thinkingMode,
+      reasoning_effort: persona === 'emotional_companion' ? undefined : reasoningEffort,
+      model_key: persona !== 'emotional_companion' ? modelKey : undefined,
+    }, onDelta, trace);
   },
   regenerate(
     token: string,
@@ -382,29 +420,37 @@ export const api = {
           casual_mode: casualMode,
           persona,
           internet_enabled: internetEnabled,
-          thinking_mode: thinkingMode,
-          reasoning_effort: reasoningEffort,
-          model_key: persona === 'none' ? modelKey : undefined,
+          thinking_mode: persona === 'emotional_companion' ? false : thinkingMode,
+          reasoning_effort: persona === 'emotional_companion' ? undefined : reasoningEffort,
+          model_key: persona !== 'emotional_companion' ? modelKey : undefined,
         }),
       },
       token,
     );
   },
-  messageAudio(token: string, messageId: string, voiceId?: string) {
+  messageAudio(token: string, messageId: string, voiceId?: string, trace?: AIPipelineTrace) {
     return request<Message>(
       `/chat/messages/${messageId}/audio`,
       {
         method: 'POST',
+        headers: pipelineHeaders(trace),
         body: JSON.stringify({ voice_id: voiceId }),
       },
       token,
     );
   },
-  memories(token: string) {
-    return request<MemoryItem[]>('/memories', {}, token);
+  memories(
+    token: string,
+    options: { query?: string; memoryType?: MemoryItem['memory_type']; signal?: AbortSignal } = {},
+  ) {
+    const params = new URLSearchParams();
+    if (options.query?.trim()) params.set('q', options.query.trim());
+    if (options.memoryType) params.set('memory_type', options.memoryType);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    return request<MemoryItem[]>(`/memories${suffix}`, { signal: options.signal }, token);
   },
   modelCapabilities(token: string, persona: Persona, signal?: AbortSignal, modelKey?: string) {
-    const selected = persona === 'none' && modelKey
+    const selected = persona !== 'emotional_companion' && modelKey
       ? `&model_key=${encodeURIComponent(modelKey)}`
       : '';
     return request<ModelReasoningCapabilities>(
@@ -424,6 +470,23 @@ export const api = {
   },
   localModels(token: string, signal?: AbortSignal) {
     return request<{ models: LocalModel[] }>('/model-manager/models?persona=none', { signal }, token);
+  },
+  modelSelection(token: string, persona: Persona = 'default', signal?: AbortSignal) {
+    return request<{ model_key?: string | null; display_name?: string; loaded?: boolean }>(
+      `/model-manager/selection?persona=${encodeURIComponent(persona)}`, { signal }, token,
+    );
+  },
+  activatePersona(token: string, persona: Persona) {
+    return request<{ model_key: string; display_name: string; loaded: boolean }>(
+      '/model-manager/persona/activate', {
+        method: 'POST', body: JSON.stringify({ persona }),
+      }, token,
+    );
+  },
+  selectModel(token: string, modelKey?: string, persona: 'default' | 'none' = 'none') {
+    return request<{ model_key?: string | null; display_name?: string; loaded?: boolean }>('/model-manager/selection', {
+      method: 'PUT', body: JSON.stringify({ persona, model_key: modelKey || null }),
+    }, token);
   },
   downloadModel(token: string, model: string, quantization?: string) {
     return request<ModelDownloadJob>('/model-manager/downloads', {
@@ -453,11 +516,6 @@ export const api = {
   unloadModel(token: string, instanceId: string) {
     return request<Record<string, unknown>>('/model-manager/unload', {
       method: 'POST', body: JSON.stringify({ persona: 'none', instance_id: instanceId }),
-    }, token);
-  },
-  deleteModel(token: string, modelKey: string) {
-    return request<{ deleted: boolean; model_key: string }>('/model-manager/delete', {
-      method: 'POST', body: JSON.stringify({ persona: 'none', model_key: modelKey }),
     }, token);
   },
   addMemory(token: string, memoryType: MemoryItem['memory_type'], content: string) {
@@ -511,7 +569,7 @@ export const api = {
     const voice = await request<Voice>('/voices', { method: 'POST', body: form }, token);
     return voice;
   },
-  async transcribe(token: string, uri: string, signal?: AbortSignal): Promise<string> {
+  async transcribe(token: string, uri: string, signal?: AbortSignal, trace?: AIPipelineTrace): Promise<string> {
     const form = new FormData();
     if (Platform.OS === 'web') {
       const blob = await (await fetch(uri, { signal })).blob();
@@ -521,7 +579,9 @@ export const api = {
       const { extension, mime } = audioUploadMetadata(uri);
       form.append('audio', { uri, name: `segment.${extension}`, type: mime } as unknown as Blob);
     }
-    const result = await request<{ text: string }>('/voice/transcribe', { method: 'POST', body: form, signal }, token);
+    const result = await request<{ text: string }>('/voice/transcribe', {
+      method: 'POST', body: form, signal, headers: pipelineHeaders(trace),
+    }, token);
     return result.text;
   },
 };

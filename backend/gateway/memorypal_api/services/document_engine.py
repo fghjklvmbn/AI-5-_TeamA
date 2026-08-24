@@ -94,8 +94,42 @@ class DocumentEngine:
             start = max(end - overlap, start + 1)
         return [chunk for chunk in chunks if chunk]
 
+    @staticmethod
+    def _explicitly_references_saved_file(query: str, row) -> bool:
+        normalized = query.casefold()
+        filename = str(row["filename"] or "").casefold()
+        stem = Path(filename).stem.strip()
+        if filename and filename in normalized:
+            return True
+        if len(stem) >= 2 and stem in normalized:
+            return True
+        filename_tokens = set(TOKEN_RE.findall(stem))
+        query_tokens = set(TOKEN_RE.findall(normalized))
+        return bool(filename_tokens & query_tokens)
+
+    def attachments_for_query(self, user_id: str, session_id: str, query: str) -> list:
+        active = list(self.db.list_attachments(user_id, session_id))
+        active_ids = {str(row["id"]) for row in active}
+        all_rows = list(self.db.list_all_attachments(user_id, session_id))
+        historical_reference = any(phrase in query.casefold() for phrase in (
+            "전에 올린", "이전에 올린", "아까 올린", "업로드했던", "첨부했던",
+            "그 파일", "그 문서", "올렸던 파일", "올렸던 문서",
+        ))
+        consumed = [
+            row for row in all_rows
+            if str(row["id"]) not in active_ids
+        ]
+        explicitly_named = [
+            row for row in consumed
+            if self._explicitly_references_saved_file(query, row)
+        ]
+        # A named file is precise. Generic references such as "그 파일" use
+        # only the most recent upload to avoid mixing unrelated old documents.
+        reusable = explicitly_named or (consumed[-1:] if historical_reference else [])
+        return [*active, *reusable]
+
     def retrieve_context(self, user_id: str, session_id: str, query: str) -> str:
-        rows = self.db.list_attachments(user_id, session_id)
+        rows = self.attachments_for_query(user_id, session_id, query)
         if not rows:
             return ""
         query_tokens = set(TOKEN_RE.findall(query.lower()))

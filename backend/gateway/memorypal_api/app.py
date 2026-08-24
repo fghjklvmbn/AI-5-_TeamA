@@ -29,6 +29,7 @@ from .services.memory_engine import MemoryEngine
 from .services.model_manager import ModelManager
 from .services.semantic_rag import SemanticRagEngine
 from .services.operation_state import OperationStateManager, install_operation_middleware
+from .services.model_usage import ModelUsageTracker
 from .services.pipeline import ModelPipeline
 from .services.portrait_engine import PortraitEngine
 from .services.task_queue import create_task_queue
@@ -127,8 +128,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.tool_registry = GatewayToolRegistry(
         app.state.memory_engine, app.state.document_engine, app.state.web_search_engine,
     )
-    app.state.pipeline = ModelPipeline(resolved)
-    app.state.model_manager = ModelManager(resolved)
+    app.state.model_usage = ModelUsageTracker()
+    app.state.pipeline = ModelPipeline(resolved, app.state.model_usage)
+    app.state.model_manager = ModelManager(resolved, app.state.model_usage)
     app.state.hardware_monitor = HardwareMonitorHub(resolved)
     app.state.semantic_rag = SemanticRagEngine(
         db, app.state.pipeline, app.state.document_engine,

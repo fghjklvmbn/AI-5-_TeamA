@@ -88,6 +88,9 @@ export function SettingsScreen({
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const thinkingSupported = modelCapabilities?.thinking_supported === true;
+  const companionThinkingDisabled = persona === 'emotional_companion';
+  const thinkingAvailable = thinkingSupported && !companionThinkingDisabled;
+  const effectiveThinkingMode = thinkingMode && thinkingAvailable;
   const supportedEfforts = modelCapabilities?.reasoning_efforts ?? [];
   const reasoningDepthSupported = supportedEfforts.length > 0;
   const sampleRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -415,7 +418,7 @@ export function SettingsScreen({
         </Pressable>
       </View>
 
-      {persona === 'none' && (
+      {persona !== 'emotional_companion' && (
         <>
           <Text style={styles.sectionTitle}>AI 모델</Text>
           <ModelManager
@@ -472,7 +475,9 @@ export function SettingsScreen({
           <View style={styles.switchCopy}>
             <Text style={styles.rowLabel}>생각 모드</Text>
             <Text style={styles.switchDescription}>
-              {modelCapabilitiesLoading
+              {companionThinkingDisabled
+                ? '정서적 동반자는 안정적인 답변을 위해 생각 모드를 사용하지 않아요.'
+                : modelCapabilitiesLoading
                 ? 'LM Studio에서 현재 모델의 추론 지원 상태를 확인하고 있어요.'
                 : !modelCapabilities?.available
                   ? '현재 모델의 추론 지원 상태를 확인할 수 없어요.'
@@ -485,16 +490,16 @@ export function SettingsScreen({
           </View>
           <Switch
             accessibilityLabel="생각 모드"
-            accessibilityState={{ disabled: modelCapabilitiesLoading || !thinkingSupported }}
-            disabled={modelCapabilitiesLoading || !thinkingSupported}
+            accessibilityState={{ disabled: companionThinkingDisabled || modelCapabilitiesLoading || !thinkingSupported }}
+            disabled={companionThinkingDisabled || modelCapabilitiesLoading || !thinkingSupported}
             onValueChange={onThinkingModeChange}
             thumbColor="#FFFFFF"
             trackColor={{ false: colors.border, true: colors.primary }}
-            value={thinkingMode && thinkingSupported}
+            value={effectiveThinkingMode}
           />
         </View>
         <View style={styles.divider} />
-        <View style={(!thinkingMode || !reasoningDepthSupported) && styles.reasoningDisabled}>
+        <View style={(!effectiveThinkingMode || !reasoningDepthSupported) && styles.reasoningDisabled}>
           <Text style={styles.rowLabel}>추론 깊이</Text>
           <View style={[styles.choiceRow, styles.reasoningChoices]}>
             {([
@@ -505,10 +510,10 @@ export function SettingsScreen({
               <Pressable
                 accessibilityLabel={`추론 깊이 ${option.label}`}
                 accessibilityState={{
-                  disabled: !thinkingMode || !supportedEfforts.includes(option.value),
+                  disabled: !effectiveThinkingMode || !supportedEfforts.includes(option.value),
                   selected: reasoningEffort === option.value,
                 }}
-                disabled={!thinkingMode || !supportedEfforts.includes(option.value)}
+                disabled={!effectiveThinkingMode || !supportedEfforts.includes(option.value)}
                 key={option.value}
                 onPress={() => onReasoningEffortChange(option.value)}
                 style={[styles.choice, reasoningEffort === option.value && styles.choiceActive]}
@@ -520,7 +525,9 @@ export function SettingsScreen({
             ))}
           </View>
           <Text style={styles.reasoningHint}>
-            {modelCapabilitiesLoading
+            {companionThinkingDisabled
+              ? '정서적 동반자에서는 추론 깊이가 비활성화됩니다.'
+              : modelCapabilitiesLoading
               ? 'LM Studio에서 모델의 추론 기능을 확인하고 있어요.'
               : !modelCapabilities?.available
                 ? '모델 기능을 확인할 수 없어 추론 옵션을 안전하게 비활성화했어요.'
@@ -528,7 +535,7 @@ export function SettingsScreen({
                   ? `${modelCapabilities.model}은 생각 모드를 지원하지 않아요.`
                   : !reasoningDepthSupported
                     ? '이 모델은 생각 모드만 지원하며 추론 깊이는 조절할 수 없어요.'
-                    : !thinkingMode
+                    : !effectiveThinkingMode
                       ? '생각 모드를 켜면 모델이 지원하는 추론 깊이를 선택할 수 있어요.'
                       : `LM Studio가 제공한 추론 깊이: ${supportedEfforts.join(', ')}`}
           </Text>

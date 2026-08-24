@@ -104,9 +104,13 @@ class ModelUnloadRequest(BaseModel):
     instance_id: str = Field(min_length=1, max_length=300)
 
 
-class ModelDeleteRequest(BaseModel):
-    persona: Literal["none"]
-    model_key: str = Field(min_length=1, max_length=300)
+class ModelSelectionRequest(BaseModel):
+    persona: Literal["default", "none"]
+    model_key: str | None = Field(default=None, min_length=1, max_length=300)
+
+
+class PersonaActivationRequest(BaseModel):
+    persona: Literal["default", "emotional_companion", "none"]
 
 
 class ModelReasoningCapabilitiesResponse(BaseModel):
@@ -136,6 +140,7 @@ class MessageResponse(BaseModel):
     audio_url: str | None = None
     created_at: str
     character_cue: CharacterCue | None = None
+    attachments: list[AttachmentResponse] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -180,7 +185,7 @@ class VoiceStatusResponse(BaseModel):
 
 
 class PortraitGenerateRequest(BaseModel):
-    persona: Literal["default", "emotional_companion"] = "default"
+    persona: Literal["default", "emotional_companion", "none"] = "default"
 
 
 class PortraitResponse(BaseModel):
@@ -191,6 +196,10 @@ class PortraitResponse(BaseModel):
     accuracy_percent: int = Field(default=0, ge=0, le=100)
     analyzed_sessions: int = Field(default=0, ge=0)
     analyzed_messages: int = Field(default=0, ge=0)
+    ready_for_generation: bool = False
+    readiness_sessions: int = Field(default=0, ge=0)
+    readiness_turns: int = Field(default=0, ge=0)
+    readiness_characters: int = Field(default=0, ge=0)
     progress_percent: int = Field(default=0, ge=0, le=100)
     vector_method: str | None = None
     started_at: str | None = None

@@ -1,11 +1,15 @@
 import json
 import asyncio
+import time
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
 from memorypal_api.app import create_app
 from memorypal_api.config import load_settings
+from memorypal_api.services.agent_loop import AgentContext
+from memorypal_api.services.memory_engine import MemoryCandidate
+from memorypal_api.services.pipeline import PipelineUnavailable
 
 
 def register(client: TestClient, email: str) -> tuple[str, str]:
@@ -17,6 +21,62 @@ def register(client: TestClient, email: str) -> tuple[str, str]:
     assert response.status_code == 201
     body = response.json()
     return body["user"]["id"], body["access_token"]
+
+
+def wait_for_memory_postprocessing(app) -> None:
+    for _ in range(100):
+        if not app.state.chat_postprocess_tasks:
+            return
+        time.sleep(0.01)
+    raise AssertionError("chat memory postprocessing did not finish")
+
+
+def test_chat_keeps_first_evidence_in_session_memory_and_promotes_after_cross_session_repeat(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+
+    async def generate(*_args, **_kwargs) -> str:
+        return "재즈 취향에 맞춰 이야기할게요."
+
+    async def extract_memories(*_args, **_kwargs) -> list[MemoryCandidate]:
+        return [MemoryCandidate(
+            "preference", "사용자는 재즈를 선호해", 0.94, 0.84,
+        )]
+
+    app.state.pipeline.generate = generate
+    app.state.pipeline.extract_memories = extract_memories
+    with TestClient(app) as client:
+        user_id, token = register(client, "memory-boundary@example.com")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        first = client.post(
+            "/v1/chat/messages",
+            json={"text": "나는 재즈를 선호하는 편이야", "speak": False},
+            headers=headers,
+        )
+        assert first.status_code == 200
+        wait_for_memory_postprocessing(app)
+        first_session_id = first.json()["session"]["id"]
+        assert "재즈를 선호하는 편이야" in app.state.db.get_session_working_memory(
+            user_id, first_session_id,
+        )
+        assert app.state.db.list_memories(user_id) == []
+
+        second = client.post(
+            "/v1/chat/messages",
+            json={"text": "나는 재즈를 선호하는 편이야", "speak": False},
+            headers=headers,
+        )
+        assert second.status_code == 200
+        assert second.json()["session"]["id"] != first_session_id
+        wait_for_memory_postprocessing(app)
+
+        long_term = app.state.db.list_memories(user_id)
+        assert len(long_term) == 1
+        assert long_term[0]["memory_type"] == "preference"
+        assert "재즈" in long_term[0]["content"]
 
 
 def test_on_demand_audio_is_generated_once_and_scoped_to_owner(tmp_path):
@@ -69,6 +129,40 @@ def test_on_demand_audio_rejects_unfinished_answer(tmp_path):
             json={}, headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 409
+
+
+def test_on_demand_audio_excludes_display_only_web_sources(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+    calls: list[str] = []
+
+    async def synthesize(text: str, _voice_id: str | None, _voice_style: str) -> str:
+        calls.append(text)
+        return "https://example.com/tts/outputs/answer-only.wav"
+
+    app.state.pipeline.synthesize = synthesize
+    with TestClient(app) as client:
+        owner_id, token = register(client, "source-audio@example.com")
+        session = app.state.db.create_session(owner_id)
+        full_answer = (
+            "검색 결과를 바탕으로 정리한 답변입니다.\n\n"
+            "### 검색 출처\n"
+            "- [첫 번째 출처](https://example.com/one)\n"
+            "- [두 번째 출처](https://example.com/two)"
+        )
+        message = app.state.db.save_conversation(
+            owner_id, session["id"], "질문", full_answer,
+        )
+        response = client.post(
+            f"/v1/chat/messages/{message['id']}/audio",
+            json={}, headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert calls == ["검색 결과를 바탕으로 정리한 답변입니다."]
+        assert response.json()["assistant_text"] == full_answer
 
 
 def test_chat_stream_emits_deltas_then_persists_completed_message(tmp_path):
@@ -147,6 +241,99 @@ def test_chat_stream_does_not_wait_for_memory_extraction(tmp_path):
         assert events[-1]["type"] == "complete"
         assert events[-1]["response"]["message"]["assistant_text"] == "완료"
         assert app.state.chat_postprocess_tasks
+
+
+def test_chat_consumes_only_the_attachments_used_by_a_successful_request(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+
+    async def gather_context(**kwargs) -> AgentContext:
+        rows = app.state.db.list_attachments(kwargs["user_id"], kwargs["session_id"])
+        assert [row["filename"] for row in rows] == ["one-time.txt"]
+        return AgentContext(
+            memories=[], document_context="일회용 문서 근거", web_context="",
+            web_sources=[], steps_used=0,
+        )
+
+    async def generate(*_args, **_kwargs) -> str:
+        return "문서를 반영한 답변"
+
+    async def extract_memories(*_args, **_kwargs) -> list:
+        return []
+
+    app.state.agent_loop.gather_context = gather_context
+    app.state.pipeline.generate = generate
+    app.state.pipeline.extract_memories = extract_memories
+    with TestClient(app) as client:
+        user_id, token = register(client, "one-time-attachment@example.com")
+        session = app.state.db.create_session(user_id)
+        attachment = app.state.db.create_attachment(
+            user_id, session["id"], "one-time.txt", "text/plain", 12, "문서 내용",
+            file_content="문서 내용".encode("utf-8"),
+        )
+
+        response = client.post(
+            "/v1/chat/messages",
+            json={"text": "이 내용을 요약해줘", "session_id": session["id"], "speak": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["message"]["attachments"] == [{
+            "id": attachment["id"], "session_id": session["id"],
+            "filename": "one-time.txt", "content_type": "text/plain",
+            "size_bytes": 12, "created_at": attachment["created_at"],
+        }]
+        history = client.get(
+            f"/v1/sessions/{session['id']}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert history.json()[0]["attachments"][0]["filename"] == "one-time.txt"
+        content = client.get(
+            f"/v1/attachments/{attachment['id']}/content",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert content.status_code == 200
+        assert content.content == "문서 내용".encode("utf-8")
+        assert app.state.db.get_attachment(user_id, attachment["id"])["consumed_at"] is not None
+        assert app.state.db.list_attachments(user_id, session["id"]) == []
+        assert len(app.state.db.list_all_attachments(user_id, session["id"])) == 1
+
+
+def test_failed_chat_keeps_one_time_attachment_for_retry(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+
+    async def gather_context(**_kwargs) -> AgentContext:
+        return AgentContext(
+            memories=[], document_context="재시도할 문서", web_context="",
+            web_sources=[], steps_used=0,
+        )
+
+    async def generate(*_args, **_kwargs) -> str:
+        raise PipelineUnavailable("temporary failure")
+
+    app.state.agent_loop.gather_context = gather_context
+    app.state.pipeline.generate = generate
+    with TestClient(app) as client:
+        user_id, token = register(client, "retry-attachment@example.com")
+        session = app.state.db.create_session(user_id)
+        attachment = app.state.db.create_attachment(
+            user_id, session["id"], "retry.txt", "text/plain", 12, "문서 내용",
+        )
+
+        response = client.post(
+            "/v1/chat/messages",
+            json={"text": "다시 시도할 질문", "session_id": session["id"], "speak": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 503
+        assert app.state.db.get_attachment(user_id, attachment["id"]) is not None
 
 
 def test_chat_voice_switch_controls_output_length_policy(tmp_path):

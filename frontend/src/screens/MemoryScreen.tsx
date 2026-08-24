@@ -31,26 +31,58 @@ export function MemoryScreen({ token }: { token: string }) {
   const [content, setContent] = useState('');
   const [type, setType] = useState<MemoryItem['memory_type']>('fact');
   const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [selectedType, setSelectedType] = useState<'all' | MemoryItem['memory_type']>('all');
+  const [searching, setSearching] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
-    try { setItems(await api.memories(token)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : '기억을 불러오지 못했어요.'); }
-    finally { setLoading(false); }
+  const load = async (signal?: AbortSignal) => {
+    const memoryType = selectedType === 'all' ? undefined : selectedType;
+    return api.memories(token, { query, memoryType, signal });
   };
-  useEffect(() => { void load(); }, [token]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const delay = query.trim() ? 250 : 0;
+    const timer = setTimeout(() => {
+      setSearching(true);
+      void load(controller.signal).then((next) => {
+        if (controller.signal.aborted) return;
+        setItems(next);
+        setError('');
+      }).catch((reason) => {
+        if (!controller.signal.aborted) {
+          setError(reason instanceof Error ? reason.message : '기억을 불러오지 못했어요.');
+        }
+      }).finally(() => {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setSearching(false);
+        }
+      });
+    }, delay);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [token, query, selectedType]);
 
   const remove = async (id: string) => {
     setItems((current) => current.filter((item) => item.id !== id));
     try { await api.deleteMemory(token, id); }
-    catch { await load(); }
+    catch {
+      try { setItems(await load()); } catch { /* Keep the optimistic view if refresh also fails. */ }
+    }
   };
 
   const add = async () => {
     if (!content.trim()) return;
     try {
       const item = await api.addMemory(token, type, content.trim());
-      setItems((current) => [item, ...current.filter((value) => value.id !== item.id)]);
+      const matchesType = selectedType === 'all' || item.memory_type === selectedType;
+      const matchesQuery = !query.trim() || item.content.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
+      if (matchesType && matchesQuery) {
+        setItems((current) => [item, ...current.filter((value) => value.id !== item.id)]);
+      }
       setContent('');
       setAdding(false);
     } catch (reason) {
@@ -68,13 +100,74 @@ export function MemoryScreen({ token }: { token: string }) {
         </View>
         <Pressable accessibilityLabel="기억 직접 추가" onPress={() => setAdding(true)} style={styles.addButton}><Text style={styles.addIcon}>＋</Text></Pressable>
       </View>
+      <View style={styles.searchSection}>
+        <View style={styles.searchBox}>
+          <Text style={styles.searchIcon}>⌕</Text>
+          <TextInput
+            accessibilityLabel="기억 검색"
+            onChangeText={setQuery}
+            placeholder={selectedType === 'all' ? '기억 내용 검색' : `${labels[selectedType].label} 기억 검색`}
+            placeholderTextColor={colors.muted}
+            returnKeyType="search"
+            style={styles.searchInput}
+            value={query}
+          />
+          {searching && <ActivityIndicator color={colors.primary} size="small" />}
+          {!!query && !searching && (
+            <Pressable accessibilityLabel="검색어 지우기" hitSlop={8} onPress={() => setQuery('')}>
+              <Text style={styles.searchClear}>×</Text>
+            </Pressable>
+          )}
+        </View>
+        <ScrollView
+          contentContainerStyle={styles.filterRow}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+        >
+          {(['all', ...Object.keys(labels)] as ('all' | MemoryItem['memory_type'])[]).map((key) => {
+            const active = selectedType === key;
+            const label = key === 'all' ? '전체' : labels[key].label;
+            return (
+              <Pressable
+                accessibilityLabel={`${label} 기억만 보기`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={key}
+                onPress={() => setSelectedType(key)}
+                style={[styles.filterChip, active && styles.filterChipActive]}
+              >
+                {key !== 'all' && <Text style={[styles.filterIcon, active && styles.filterTextActive]}>{labels[key].icon}</Text>}
+                <Text style={[styles.filterText, active && styles.filterTextActive]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        {!loading && (
+          <Text accessibilityLiveRegion="polite" style={styles.resultCount}>
+            {selectedType === 'all' ? '전체' : labels[selectedType].label} 기억 {items.length}개
+          </Text>
+        )}
+      </View>
       {loading ? <ActivityIndicator color={colors.primary} style={{ marginTop: 80 }} /> : (
         <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
           {!items.length && (
             <View style={styles.empty}>
               <Text style={styles.emptyIcon}>◇</Text>
-              <Text style={styles.emptyTitle}>아직 저장된 기억이 없어요</Text>
-              <Text style={styles.emptyText}>“나는 따뜻한 라테를 좋아해”처럼 말하면{`\n`}MemoryPal이 다음 대화에 기억해 둘게요.</Text>
+              <Text style={styles.emptyTitle}>{query.trim() || selectedType !== 'all' ? '조건에 맞는 기억이 없어요' : '아직 저장된 기억이 없어요'}</Text>
+              <Text style={styles.emptyText}>
+                {query.trim() || selectedType !== 'all'
+                  ? '검색어나 분류를 바꾸어 다시 찾아보세요.'
+                  : `“나는 따뜻한 라테를 좋아해”처럼 말하면\nMemoryPal이 다음 대화에 기억해 둘게요.`}
+              </Text>
+              {(query.trim() || selectedType !== 'all') && (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => { setQuery(''); setSelectedType('all'); }}
+                  style={styles.resetButton}
+                >
+                  <Text style={styles.resetButtonText}>검색 조건 초기화</Text>
+                </Pressable>
+              )}
             </View>
           )}
           {items.map((item) => (
@@ -133,11 +226,25 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   subtitle: { color: colors.muted, fontSize: 12, marginTop: 7, maxWidth: 285 },
   addButton: { width: 44, height: 44, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' },
   addIcon: { color: '#FFFFFF', fontSize: 25, lineHeight: 28 },
+  searchSection: { paddingHorizontal: 20, paddingBottom: 12 },
+  searchBox: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 9, borderWidth: 1, borderColor: colors.border, borderRadius: 16, backgroundColor: colors.input, paddingHorizontal: 13 },
+  searchIcon: { color: colors.primaryDark, fontSize: 22, transform: [{ rotate: '-20deg' }] },
+  searchInput: { flex: 1, color: colors.ink, fontSize: 13, paddingVertical: 12 },
+  searchClear: { color: colors.muted, fontSize: 23, lineHeight: 25 },
+  filterRow: { gap: 7, paddingTop: 11, paddingRight: 8 },
+  filterChip: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderColor: colors.border, borderRadius: 999, backgroundColor: colors.surface, paddingHorizontal: 12 },
+  filterChipActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
+  filterIcon: { color: colors.muted, fontSize: 10 },
+  filterText: { color: colors.muted, fontSize: 11, fontWeight: '800' },
+  filterTextActive: { color: colors.primaryDark },
+  resultCount: { color: colors.muted, fontSize: 10, marginTop: 10, paddingHorizontal: 2 },
   list: { paddingHorizontal: 20, paddingBottom: 30 },
   empty: { alignItems: 'center', marginTop: 78 },
   emptyIcon: { fontSize: 48, color: colors.primary },
   emptyTitle: { color: colors.ink, fontSize: 18, fontWeight: '800', marginTop: 14 },
   emptyText: { color: colors.muted, fontSize: 13, lineHeight: 21, textAlign: 'center', marginTop: 8 },
+  resetButton: { minHeight: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: colors.primarySoft, paddingHorizontal: 18, marginTop: 18 },
+  resetButtonText: { color: colors.primaryDark, fontSize: 12, fontWeight: '900' },
   card: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 21, padding: 17, marginBottom: 12 },
   cardTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   typePill: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.primarySoft, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },

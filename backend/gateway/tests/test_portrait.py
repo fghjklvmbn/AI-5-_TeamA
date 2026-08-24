@@ -3,6 +3,7 @@ import json
 import time
 from dataclasses import replace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from memorypal_api.app import create_app
@@ -39,9 +40,84 @@ def test_relevance_weight_excludes_knowledge_and_keeps_personal_evidence():
     assert PortraitEngine.relevance_weight("나는 조용히 산책하는 걸 좋아해") >= 0.75
 
 
-def test_portrait_api_runs_once_persists_weighted_features_and_isolates_users(tmp_path):
+def test_portrait_title_is_replaced_when_it_does_not_match_summary():
+    title, summary = PortraitEngine._parse_final(
+        json.dumps({
+            "title": "열정",
+            "summary": "새로운 일에 도전하며 그 과정에서 성장하는 모습을 중요하게 여겨요.",
+        }, ensure_ascii=False),
+        ["익숙하지 않은 과제에도 꾸준히 도전하는 편입니다."],
+    )
+
+    assert title == "도전"
+    assert title in summary
+
+
+def test_portrait_title_keeps_a_grounded_model_choice():
+    title, _summary = PortraitEngine._parse_final(
+        json.dumps({
+            "title": "온기",
+            "summary": "가까운 관계에서 서로 나누는 온기를 소중히 여겨요.",
+        }, ensure_ascii=False),
+        ["관계의 따뜻함을 중요하게 여깁니다."],
+    )
+
+    assert title == "온기"
+
+
+def test_portrait_title_replaces_a_generic_word_with_repeated_specific_evidence():
+    title = PortraitEngine.aligned_title(
+        "마음",
+        "대화를 종합하면 안녕이라는 인사로 대화를 시작했고, 다음에도 안녕이라고 인사했어요.",
+    )
+
+    assert title == "안녕"
+
+
+def test_completed_legacy_portrait_is_aligned_when_read(tmp_path, monkeypatch):
     settings = replace(load_settings(), database_path=tmp_path / "memorypal.db", root_path="")
     app = create_app(settings)
+    monkeypatch.setattr(
+        PortraitEngine,
+        "readiness_counts",
+        classmethod(lambda _cls, _db, _user_id: (6, 11, 751)),
+    )
+
+    with TestClient(app) as client:
+        user_id, token = register(client, "portrait-legacy-title@example.com")
+        portrait, _started = app.state.db.begin_portrait_generation(user_id, "default")
+        worker_id = "legacy-title-worker"
+        assert app.state.db.claim_portrait_generation(
+            user_id, portrait["generation_id"], worker_id, lease_seconds=120,
+        )
+        assert app.state.db.complete_portrait(
+            user_id,
+            portrait["generation_id"],
+            worker_id,
+            "열정",
+            "새로운 과제에 도전하며 그 과정에서 성장하는 모습을 중요하게 여겨요.",
+            82,
+            6,
+            11,
+            "test-vector",
+        )
+
+        response = client.get(
+            "/v1/portrait", headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "도전"
+
+
+def test_portrait_api_runs_once_persists_weighted_features_and_isolates_users(tmp_path, monkeypatch):
+    settings = replace(load_settings(), database_path=tmp_path / "memorypal.db", root_path="")
+    app = create_app(settings)
+    monkeypatch.setattr(
+        PortraitEngine,
+        "readiness_counts",
+        classmethod(lambda _cls, _db, _user_id: (6, 11, 751)),
+    )
     summarize_calls: list[str] = []
     compose_personas: list[str] = []
 
@@ -271,22 +347,58 @@ def test_portrait_lease_can_be_requeued_for_clean_restart(tmp_path):
     )
 
 
-def test_empty_history_completes_with_low_confidence_portrait(tmp_path):
+@pytest.mark.parametrize("persona", ["default", "emotional_companion", "none"])
+def test_empty_history_is_rejected_for_every_persona(tmp_path, persona):
     settings = replace(load_settings(), database_path=tmp_path / "empty.db", root_path="")
     app = create_app(settings)
-
-    async def embed_texts(texts: list[str]) -> list[list[float]]:
-        return [[1.0, 0.0] for _ in texts]
-
-    app.state.pipeline.embed_texts = embed_texts
     with TestClient(app) as client:
-        _user_id, token = register(client, "empty-portrait@example.com")
+        _user_id, token = register(client, f"empty-{persona}@example.com")
         headers = {"Authorization": f"Bearer {token}"}
-        response = client.post("/v1/portrait/generate", json={}, headers=headers)
-        assert response.status_code == 202
-        complete = wait_for_portrait(client, headers)
-        assert complete["status"] == "complete"
-        assert complete["title"] == "여백"
-        assert complete["accuracy_percent"] == 0
-        assert complete["analyzed_sessions"] == 0
-        assert complete["analyzed_messages"] == 0
+        response = client.post(
+            "/v1/portrait/generate", json={"persona": persona}, headers=headers,
+        )
+        assert response.status_code == 409
+        assert "세션 0/6개" in response.json()["detail"]
+        assert "대화 0/11턴" in response.json()["detail"]
+        assert "사용자 글자 0/751자" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("persona", ["default", "emotional_companion", "none"])
+def test_every_persona_portrait_requires_enough_conversation_data(tmp_path, monkeypatch, persona):
+    settings = replace(load_settings(), database_path=tmp_path / "readiness.db", root_path="")
+    app = create_app(settings)
+
+    async def no_dispatch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("memorypal_api.routes.dispatch_portrait_task", no_dispatch)
+    with TestClient(app) as client:
+        user_id, token = register(client, f"portrait-readiness-{persona}@example.com")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        rejected = client.post(
+            "/v1/portrait/generate", json={"persona": persona}, headers=headers,
+        )
+        assert rejected.status_code == 409
+        assert "세션 0/6개" in rejected.json()["detail"]
+        assert "대화 0/11턴" in rejected.json()["detail"]
+        assert "사용자 글자 0/751자" in rejected.json()["detail"]
+
+        long_turn = "오늘의 감정과 경험을 충분히 설명하는 개인적인 이야기입니다. " * 3
+        for session_index in range(6):
+            session = app.state.db.create_session(user_id, f"대화 {session_index + 1}")
+            turns = 1 if session_index == 5 else 2
+            for _ in range(turns):
+                app.state.db.save_conversation(user_id, session["id"], long_turn, "잘 들었어요.")
+
+        accepted = client.post(
+            "/v1/portrait/generate", json={"persona": persona}, headers=headers,
+        )
+        assert accepted.status_code == 202
+        assert accepted.json()["persona"] == (
+            "default" if persona == "none" else persona
+        )
+        assert accepted.json()["ready_for_generation"] is True
+        assert accepted.json()["readiness_sessions"] == 6
+        assert accepted.json()["readiness_turns"] == 11
+        assert accepted.json()["readiness_characters"] >= 751

@@ -3,7 +3,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .dependencies import CurrentUser, get_current_user
-from .schemas import ModelDeleteRequest, ModelDownloadRequest, ModelLoadRequest, ModelUnloadRequest
+from .schemas import (
+    ModelDownloadRequest,
+    ModelLoadRequest,
+    PersonaActivationRequest,
+    ModelSelectionRequest,
+    ModelUnloadRequest,
+)
 from .services.model_manager import (
     ModelManagerConflict,
     ModelManagerError,
@@ -25,6 +31,19 @@ def _raise_manager(exc: ModelManagerError) -> None:
     if isinstance(exc, ModelManagerUnavailable):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/persona/activate")
+async def activate_persona(
+    payload: PersonaActivationRequest, request: Request,
+    _user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return await request.app.state.model_manager.activate_persona(
+            _user.id, payload.persona,
+        )
+    except ModelManagerError as exc:
+        _raise_manager(exc)
 
 
 @router.get("/status")
@@ -57,6 +76,28 @@ async def list_models(
     _require_none(persona)
     try:
         return await request.app.state.model_manager.user_models(_user.id)
+    except ModelManagerError as exc:
+        _raise_manager(exc)
+
+
+@router.get("/selection")
+async def get_model_selection(
+    request: Request, persona: str = "default", _user: CurrentUser = Depends(get_current_user),
+):
+    if persona not in {"default", "emotional_companion", "none"}:
+        raise HTTPException(status_code=422, detail="Unsupported persona")
+    return await request.app.state.model_manager.selected_model(_user.id, persona)
+
+
+@router.put("/selection")
+async def set_model_selection(
+    payload: ModelSelectionRequest, request: Request,
+    _user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        return await request.app.state.model_manager.select_model(
+            _user.id, payload.model_key, payload.persona,
+        )
     except ModelManagerError as exc:
         _raise_manager(exc)
 
@@ -120,16 +161,5 @@ async def unload_model(
 ):
     try:
         return await request.app.state.model_manager.unload(payload.instance_id)
-    except ModelManagerError as exc:
-        _raise_manager(exc)
-
-
-@router.post("/delete")
-async def delete_model(
-    payload: ModelDeleteRequest, request: Request,
-    _user: CurrentUser = Depends(get_current_user),
-):
-    try:
-        return await request.app.state.model_manager.delete(payload.model_key)
     except ModelManagerError as exc:
         _raise_manager(exc)

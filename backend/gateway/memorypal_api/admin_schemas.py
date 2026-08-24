@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -81,6 +81,7 @@ class AdminOperationItem(BaseModel):
     request_id: str
     correlation_id: str
     operation_type: str
+    resource_id: str | None = None
     status: OperationStatus
     progress_percent: int = Field(ge=0, le=100)
     version: int = Field(ge=1)
@@ -110,6 +111,28 @@ class AdminTransitionItem(BaseModel):
 
 class AdminTransitionListResponse(BaseModel):
     items: list[AdminTransitionItem]
+
+
+class AdminLlmLogEvent(BaseModel):
+    cursor: int = Field(ge=1)
+    source: Literal["server", "runtime", "model"]
+    level: Literal["trace", "debug", "info", "warn", "error", "fatal"]
+    event_type: str = Field(min_length=1, max_length=80)
+    model_key: str | None = Field(default=None, max_length=300)
+    title: str = Field(min_length=1, max_length=120)
+    message: str = Field(max_length=2000)
+    detail: str | None = Field(default=None, max_length=4000)
+    importance: Literal["critical", "important", "routine", "debug"]
+    stats: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: str = Field(max_length=100)
+
+
+class AdminLlmLogResponse(BaseModel):
+    enabled: bool
+    available: bool
+    items: list[AdminLlmLogEvent]
+    latest_cursor: int = Field(ge=0)
+    next_cursor: int = Field(ge=0)
 
 
 class AdminCorrelationResponse(BaseModel):

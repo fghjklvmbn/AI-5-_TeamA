@@ -10,9 +10,16 @@ type Props = {
   messageId: string;
   onError: (message: string) => void;
   autoPlay?: boolean;
+  controls?: boolean;
 };
 
-export function MessageAudioButton({ uri, messageId, onError, autoPlay = false }: Props) {
+export function MessageAudioButton({
+  uri,
+  messageId,
+  onError,
+  autoPlay = false,
+  controls = true,
+}: Props) {
   const { colors } = useTheme();
   const player = useAudioPlayer(uri);
   const playerStatus = useAudioPlayerStatus(player);
@@ -40,6 +47,8 @@ export function MessageAudioButton({ uri, messageId, onError, autoPlay = false }
     autoPlayedUriRef.current = uri;
     void play();
   }, [autoPlay, play, uri]);
+
+  if (!controls) return null;
 
   return (
     <Pressable

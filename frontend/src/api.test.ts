@@ -1,4 +1,4 @@
-import { ApiError, api, setUnauthorizedHandler } from './api';
+import { ApiError, api, createAIPipelineTrace, setUnauthorizedHandler } from './api';
 
 function response(body: unknown, status = 200): Response {
   return {
@@ -34,6 +34,17 @@ describe('public API client', () => {
     expect(headers.get('Content-Type')).toBe('application/json');
   });
 
+  it('encodes memory text search and category filters', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(response([]));
+
+    await api.memories('jwt-token', { query: '  재즈 & 산책  ', memoryType: 'preference' });
+
+    const [url] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    expect(url).toContain('/memories?');
+    expect(url).toContain('q=%EC%9E%AC%EC%A6%88+%26+%EC%82%B0%EC%B1%85');
+    expect(url).toContain('memory_type=preference');
+  });
+
   it('notifies the auth boundary and throws ApiError on an authenticated 401', async () => {
     const onUnauthorized = jest.fn();
     const unregister = setUnauthorizedHandler(onUnauthorized);
@@ -56,7 +67,7 @@ describe('public API client', () => {
     );
   });
 
-  it('only sends a user-selected model for the none persona', async () => {
+  it('sends a selected model for default and none but keeps the companion model fixed', async () => {
     (global.fetch as jest.Mock).mockResolvedValue(response({}));
     await api.chat('token', 'hello', undefined, undefined, false, false, 'none', false, false, undefined, 'model.gguf');
     const [, noneInit] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
@@ -65,6 +76,29 @@ describe('public API client', () => {
     (global.fetch as jest.Mock).mockResolvedValue(response({}));
     await api.chat('token', 'hello', undefined, undefined, false, false, 'default', false, false, undefined, 'model.gguf');
     const [, defaultInit] = (global.fetch as jest.Mock).mock.calls[1] as [string, RequestInit];
-    expect(JSON.parse(String(defaultInit.body)).model_key).toBeUndefined();
+    expect(JSON.parse(String(defaultInit.body)).model_key).toBe('model.gguf');
+
+    (global.fetch as jest.Mock).mockResolvedValue(response({}));
+    await api.chat('token', 'hello', undefined, undefined, false, false, 'emotional_companion', false, true, 'high', 'model.gguf');
+    const [, companionInit] = (global.fetch as jest.Mock).mock.calls[2] as [string, RequestInit];
+    const companionBody = JSON.parse(String(companionInit.body));
+    expect(companionBody.model_key).toBeUndefined();
+    expect(companionBody.thinking_mode).toBe(false);
+    expect(companionBody.reasoning_effort).toBeUndefined();
+  });
+
+  it('reuses one correlation id and declares the complete AI pipeline', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue(response({}));
+    const trace = createAIPipelineTrace(['stt', 'llm', 'tts']);
+
+    await api.chat(
+      'token', 'hello', undefined, undefined, true, false, 'default', false, false,
+      undefined, undefined, trace,
+    );
+
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Headers;
+    expect(headers.get('X-Correlation-ID')).toBe(trace.correlationId);
+    expect(headers.get('X-AI-Pipeline-Stages')).toBe('stt,llm,tts');
   });
 });

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BlurView } from 'expo-blur';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
@@ -29,6 +29,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
   const [sessionId, setSessionId] = useState<string>();
   const [casualMode, setCasualMode] = useState(false);
   const [persona, setPersona] = useState<Persona>('default');
+  const [personaLoading, setPersonaLoading] = useState<Persona>();
   const [voiceId, setVoiceId] = useState<string>();
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(true);
   const [internetEnabled, setInternetEnabled] = useState(false);
@@ -62,7 +63,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
   const consumeIncomingMessage = useCallback(() => setIncomingMessage(undefined), []);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !token) {
       setTab('home');
       setSessionId(undefined);
       setIncomingMessage(undefined);
@@ -70,6 +71,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       setAccountOpen(false);
       setCasualMode(false);
       setPersona('default');
+      setPersonaLoading(undefined);
       setVoiceId(undefined);
       setVoiceReplyEnabled(true);
       setInternetEnabled(false);
@@ -109,9 +111,17 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
         setReasoningEffort(stored);
       }
     }).catch(() => undefined);
-    void AsyncStorage.getItem(`memorypal.selectedModel.${user.id}`).then((stored) => {
-      if (active) setSelectedModelKey(stored || undefined);
-    }).catch(() => undefined);
+    void api.modelSelection(token).then((selection) => {
+      if (!active) return;
+      const selected = selection.model_key || undefined;
+      setSelectedModelKey(selected);
+      const key = `memorypal.selectedModel.${user.id}`;
+      persistPreference(selected ? AsyncStorage.setItem(key, selected) : AsyncStorage.removeItem(key));
+    }).catch(() => {
+      void AsyncStorage.getItem(`memorypal.selectedModel.${user.id}`).then((stored) => {
+        if (active) setSelectedModelKey(stored || undefined);
+      }).catch(() => undefined);
+    });
     void AsyncStorage.getItem(`memorypal.conversationMode.${user.id}`).then((stored) => {
       if (active && (stored === 'live' || stored === 'chat' || stored === 'hybrid')) setConversationMode(stored);
     }).catch(() => undefined);
@@ -119,7 +129,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
       if (active && isCharacterId(stored)) setCharacterId(stored);
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [user?.id]);
+  }, [token, user?.id]);
 
   useEffect(() => {
     if (!token || !user) {
@@ -156,6 +166,12 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
     return () => controller.abort();
   }, [persona, selectedModelKey, token, user?.id]);
 
+  useEffect(() => {
+    if (!user || persona !== 'emotional_companion') return;
+    setThinkingMode(false);
+    persistPreference(AsyncStorage.setItem(`memorypal.thinkingMode.${user.id}`, 'false'));
+  }, [persona, user?.id]);
+
   if (loading) {
     return <View style={styles.loading}><ActivityIndicator color={colors.primary} size="large" /></View>;
   }
@@ -166,9 +182,24 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
     persistPreference(AsyncStorage.setItem(`memorypal.casualMode.${user.id}`, String(enabled)));
   };
 
-  const updatePersona = (value: Persona) => {
-    setPersona(value);
-    persistPreference(AsyncStorage.setItem(`memorypal.persona.${user.id}`, value));
+  const updatePersona = async (value: Persona) => {
+    if (personaLoading) return;
+    setPersonaLoading(value);
+    try {
+      const selection = await api.activatePersona(token, value);
+      setPersona(value);
+      if (value !== 'emotional_companion') {
+        setSelectedModelKey(selection.model_key || undefined);
+      }
+      persistPreference(AsyncStorage.setItem(`memorypal.persona.${user.id}`, value));
+    } catch (reason) {
+      Alert.alert(
+        '페르소나 전환 실패',
+        reason instanceof Error ? reason.message : '모델을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.',
+      );
+    } finally {
+      setPersonaLoading(undefined);
+    }
   };
 
   const updateVoiceReply = (enabled: boolean) => {
@@ -195,6 +226,9 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
     setSelectedModelKey(modelKey);
     const key = `memorypal.selectedModel.${user.id}`;
     persistPreference(modelKey ? AsyncStorage.setItem(key, modelKey) : AsyncStorage.removeItem(key));
+    persistPreference(api.selectModel(
+      token, modelKey, persona === 'none' ? 'none' : 'default',
+    ).then(() => undefined));
   };
 
   const updateDarkMode = (enabled: boolean) => {
@@ -212,7 +246,9 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
     persistPreference(AsyncStorage.setItem(`memorypal.characterId.${user.id}`, id));
   };
 
-  const activeThinkingMode = thinkingMode && modelCapabilities?.thinking_supported === true;
+  const activeThinkingMode = persona !== 'emotional_companion'
+    && thinkingMode
+    && modelCapabilities?.thinking_supported === true;
   const activeReasoningEffort = activeThinkingMode
     && modelCapabilities?.reasoning_efforts.includes(reasoningEffort)
     ? reasoningEffort
@@ -226,7 +262,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
           <AccountScreen user={user} onClose={() => setAccountOpen(false)} />
         ) : (<>
         <View style={styles.screen}>
-          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceId={voiceId} voiceReplyEnabled={conversationMode === 'live' || voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={activeThinkingMode} reasoningEffort={activeReasoningEffort} modelKey={persona === 'none' ? selectedModelKey : undefined} onModelKeyChange={updateSelectedModel} onPersonaChange={updatePersona} onVoiceIdChange={setVoiceId} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} onOpenAccount={() => setAccountOpen(true)} onLogout={logout} />}
+          {tab === 'home' && <HomeScreen token={token} user={user} casualMode={casualMode} persona={persona} voiceId={voiceId} voiceReplyEnabled={conversationMode === 'live' || voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={activeThinkingMode} reasoningEffort={activeReasoningEffort} modelKey={persona !== 'emotional_companion' ? selectedModelKey : undefined} onModelKeyChange={updateSelectedModel} onPersonaChange={updatePersona} onVoiceIdChange={setVoiceId} onConversation={openVoiceConversation} onVoiceProcessingChange={updateVoiceProcessing} onOpenAccount={() => setAccountOpen(true)} onLogout={logout} />}
           <View
             pointerEvents={tab === 'chat' ? 'auto' : 'none'}
             style={[styles.chatScreen, tab !== 'chat' && styles.hiddenScreen]}
@@ -242,7 +278,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
               internetEnabled={internetEnabled}
               thinkingMode={activeThinkingMode}
               reasoningEffort={activeReasoningEffort}
-              modelKey={persona === 'none' ? selectedModelKey : undefined}
+              modelKey={persona !== 'emotional_companion' ? selectedModelKey : undefined}
               conversationMode={conversationMode}
               characterId={characterId}
               onConversationModeChange={updateConversationMode}
@@ -258,7 +294,7 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
             pointerEvents={tab === 'portrait' ? 'auto' : 'none'}
             style={[styles.portraitScreen, tab !== 'portrait' && styles.hiddenScreen]}
           >
-            <PortraitScreen token={token} persona={persona} />
+            <PortraitScreen token={token} persona={persona} isActive={tab === 'portrait'} />
           </View>
           {tab === 'settings' && <SettingsScreen token={token} user={user} casualMode={casualMode} persona={persona} darkMode={darkMode} voiceReplyEnabled={voiceReplyEnabled} internetEnabled={internetEnabled} thinkingMode={thinkingMode} reasoningEffort={reasoningEffort} modelCapabilities={modelCapabilities} modelCapabilitiesLoading={modelCapabilitiesLoading} selectedModelKey={selectedModelKey} conversationMode={conversationMode} onCasualModeChange={updateCasualMode} onPersonaChange={updatePersona} onDarkModeChange={updateDarkMode} onVoiceReplyChange={updateVoiceReply} onInternetEnabledChange={updateInternetEnabled} onThinkingModeChange={updateThinkingMode} onReasoningEffortChange={updateReasoningEffort} onSelectedModelKeyChange={updateSelectedModel} onConversationModeChange={updateConversationMode} onOpenAccount={() => setAccountOpen(true)} logout={logout} />}
         </View>
@@ -281,6 +317,23 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
                 <Text style={styles.transcriptText}>{voiceProcessing.transcript}</Text>
               </View>
             )}
+          </View>
+        </View>
+      )}
+      {!!personaLoading && (
+        <View style={styles.processingOverlay}>
+          <BlurView intensity={32} style={StyleSheet.absoluteFill} tint={darkMode ? 'dark' : 'light'} />
+          <View style={styles.processingShade} />
+          <View style={styles.processingCard}>
+            <ActivityIndicator color={colors.primary} size="large" />
+            <Text style={styles.processingTitle}>페르소나 모델을 불러오고 있어요</Text>
+            <Text style={styles.processingDescription}>
+              {personaLoading === 'emotional_companion'
+                ? '정서적 동반자 모델을 준비하는 중입니다.'
+                : personaLoading === 'none'
+                  ? '선택한 일반 대화 모델을 준비하는 중입니다.'
+                  : '기본 대화 모델을 준비하는 중입니다.'}
+            </Text>
           </View>
         </View>
       )}

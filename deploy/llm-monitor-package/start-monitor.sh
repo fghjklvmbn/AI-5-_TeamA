@@ -12,4 +12,6 @@ exec "$PACKAGE_DIR/.venv/bin/python" "$PACKAGE_DIR/server.py" \
   --service llm --host 0.0.0.0 --port "$PORT" \
   --process-names "lm-studio,lms,llmster" \
   --health-url http://127.0.0.1:1234/api/v1/models \
-  --gpu --log-path "$PACKAGE_DIR/runtime/llm.hardware.jsonl"
+  --gpu --log-path "$PACKAGE_DIR/runtime/llm.hardware.jsonl" \
+  --lmstudio-log-path "$PACKAGE_DIR/runtime/llm.lmstudio.jsonl" \
+  --lmstudio-log-sources "server,runtime,model"

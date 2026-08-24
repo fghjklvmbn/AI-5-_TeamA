@@ -9,6 +9,8 @@ from typing import Any
 
 import httpx
 
+from .llm_log_presenter import deduplicate_presented_logs, present_llm_log
+
 
 class HardwareMonitorHub:
     def __init__(self, settings) -> None:
@@ -95,3 +97,50 @@ class HardwareMonitorHub:
             "services": current,
             "history": history,
         }
+
+    async def llm_logs(
+        self, *, after_cursor: int = 0, limit: int = 200,
+        source: str = "", level: str = "", model_key: str = "",
+    ) -> dict[str, Any]:
+        """Read privacy-filtered LM Studio events from the remote LLM monitor."""
+        base_url = self.endpoints.get("llm", "")
+        unavailable = {
+            "enabled": False, "available": False, "items": [],
+            "latest_cursor": max(0, after_cursor), "next_cursor": max(0, after_cursor),
+        }
+        if not base_url:
+            return unavailable
+        params: dict[str, str | int] = {
+            "after_cursor": max(0, after_cursor), "limit": min(500, max(1, limit)),
+        }
+        if source:
+            params["source"] = source
+        if level:
+            params["level"] = level
+        if model_key:
+            params["model_key"] = model_key
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"{base_url.rstrip('/')}/v1/logs/recent",
+                    headers={"Authorization": f"Bearer {self.token}"},
+                    params=params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+                raise ValueError("invalid LM Studio log payload")
+            latest_cursor = int(payload.get("latest_cursor", after_cursor))
+            next_cursor = int(payload.get("next_cursor", after_cursor))
+            if latest_cursor < 0 or next_cursor < 0:
+                raise ValueError("invalid LM Studio log cursor")
+            presented = [present_llm_log(item) for item in payload["items"][:limit] if isinstance(item, dict)]
+            return {
+                "enabled": bool(payload.get("enabled", True)),
+                "available": True,
+                "items": deduplicate_presented_logs(presented),
+                "latest_cursor": latest_cursor,
+                "next_cursor": next_cursor,
+            }
+        except (httpx.HTTPError, TypeError, ValueError):
+            return unavailable

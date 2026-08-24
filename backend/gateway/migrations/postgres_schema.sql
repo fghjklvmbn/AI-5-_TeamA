@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     assistant_text TEXT NOT NULL,
     input_audio_path TEXT,
     output_audio_path TEXT,
+    attachment_refs_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     FOREIGN KEY (session_id, user_id)
         REFERENCES chat_sessions(id, user_id) ON DELETE CASCADE
@@ -171,7 +172,9 @@ CREATE TABLE IF NOT EXISTS attachments (
     content_type TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
     text_content TEXT NOT NULL,
+    file_content BYTEA,
     created_at TEXT NOT NULL,
+    consumed_at TEXT,
     FOREIGN KEY (session_id, user_id)
         REFERENCES chat_sessions(id, user_id) ON DELETE CASCADE
 );

@@ -25,6 +25,7 @@ export type Message = {
   audio_url?: string | null;
   created_at: string;
   character_cue?: CharacterCue | null;
+  attachments?: Attachment[];
 };
 
 export type ChatResponse = {
@@ -89,8 +90,6 @@ export type ModelReasoningCapabilities = {
 export type ModelManagerStatus = {
   server_online: boolean;
   model_count: number;
-  delete_supported: boolean;
-  delete_reason?: string | null;
   checked_at: string;
   error?: string | null;
   gpu_metrics_available?: boolean;
@@ -126,11 +125,12 @@ export type LocalModel = {
   display_name?: string;
   type?: string;
   publisher?: string;
-  quantization?: string;
+  quantization?: string | { name?: string; bits_per_weight?: number };
   size_bytes?: number;
   max_context_length?: number;
   format?: string;
   loaded_instances?: LoadedModelInstance[];
+  processing?: boolean;
 };
 
 export type ModelDownloadJob = {
@@ -153,6 +153,10 @@ export type PortraitResponse = {
   accuracy_percent?: number | null;
   analyzed_sessions?: number;
   analyzed_messages?: number;
+  ready_for_generation?: boolean;
+  readiness_sessions?: number;
+  readiness_turns?: number;
+  readiness_characters?: number;
   progress_percent?: number;
   created_at?: string | null;
   updated_at?: string | null;

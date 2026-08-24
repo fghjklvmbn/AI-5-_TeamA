@@ -5,7 +5,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from fastapi import Request
 from fastapi.concurrency import run_in_threadpool
@@ -39,6 +39,34 @@ class RequestOperation:
 
 
 EventPublisher = Callable[[dict], Awaitable[None]]
+AI_PIPELINE_STAGES = ("stt", "llm", "tts")
+
+
+@dataclass(slots=True)
+class AIPipelineOperation:
+    manager: "OperationStateManager"
+    request: Request
+    operation_id: str
+    user_id: str
+    stages: tuple[str, ...]
+    current_stage: str
+    completed: bool = False
+
+    async def complete_stage(self) -> None:
+        if self.completed:
+            return
+        await self.manager.complete_pipeline_stage(self)
+        self.completed = True
+
+    async def fail(self, error_code: str = "pipeline_failed") -> None:
+        await self.manager.fail_pipeline(self, error_code)
+
+    def move_to(self, stage: str) -> None:
+        if stage not in self.stages:
+            raise ValueError(f"stage is not part of this pipeline: {stage}")
+        self.current_stage = stage
+        self.completed = False
+        self.request.state.pipeline_stage = stage
 
 
 def _tracking_id(value: str | None) -> str:
@@ -53,6 +81,115 @@ class OperationStateManager:
         self.db = db
         self.event_publisher = event_publisher
         self.publisher_id = f"gateway-{uuid.uuid4()}"
+
+    @staticmethod
+    def _pipeline_stages(request: Request, default_stages: Sequence[str]) -> tuple[str, ...]:
+        requested = tuple(
+            item.strip().lower()
+            for item in request.headers.get("X-AI-Pipeline-Stages", "").split(",")
+            if item.strip()
+        )
+        stages = requested or tuple(default_stages)
+        if (
+            not stages
+            or len(stages) > len(AI_PIPELINE_STAGES)
+            or len(set(stages)) != len(stages)
+            or any(stage not in AI_PIPELINE_STAGES for stage in stages)
+            or tuple(sorted(stages, key=AI_PIPELINE_STAGES.index)) != stages
+        ):
+            return tuple(default_stages)
+        return stages
+
+    async def start_pipeline(
+        self,
+        request: Request,
+        user_id: str,
+        current_stage: str,
+        default_stages: Sequence[str],
+    ) -> AIPipelineOperation:
+        """Join or create one durable operation shared by STT -> LLM/RAG -> TTS."""
+        stages = self._pipeline_stages(request, default_stages)
+        if current_stage not in stages:
+            stages = tuple(default_stages)
+        correlation_id = str(request.state.correlation_id)
+        row = await run_in_threadpool(
+            self.db.begin_operation,
+            "ai_pipeline",
+            f"pipeline-{user_id}-{correlation_id}",
+            correlation_id,
+            user_id=user_id,
+            resource_id=" -> ".join(stage.upper() for stage in stages),
+            status="running",
+            metadata={
+                "service": "gateway",
+                "stages": list(stages),
+                "stage_count": len(stages),
+                "progress_unit": 100 / len(stages),
+            },
+        )
+        operation_id = str(row["id"])
+        request.state.pipeline_operation_id = operation_id
+        request.state.pipeline_stage = current_stage
+        return AIPipelineOperation(self, request, operation_id, user_id, stages, current_stage)
+
+    async def complete_pipeline_stage(self, pipeline: AIPipelineOperation) -> None:
+        stage_number = pipeline.stages.index(pipeline.current_stage) + 1
+        progress = round(stage_number * 100 / len(pipeline.stages))
+        if stage_number == len(pipeline.stages):
+            operation = pipeline.request.state.request_operation
+            await run_in_threadpool(
+                self.db.finish_operation_with_event,
+                operation_id=pipeline.operation_id,
+                user_id=pipeline.user_id,
+                request_id=operation.request_id,
+                correlation_id=operation.correlation_id,
+                status="succeeded",
+                error_code=None,
+                event_type="ai_pipeline",
+                http_method=pipeline.request.method,
+                http_path=pipeline.request.url.path,
+                http_status=200,
+                latency_ms=None,
+                metadata={
+                    "service": "gateway",
+                    "stages": list(pipeline.stages),
+                    "completed_stage": pipeline.current_stage,
+                },
+            )
+        else:
+            await run_in_threadpool(
+                self.db.transition_operation,
+                pipeline.operation_id,
+                "running",
+                progress_percent=progress,
+                user_id=pipeline.user_id,
+                reason=f"stage_completed:{pipeline.current_stage}:{stage_number}/{len(pipeline.stages)}",
+            )
+
+    async def fail_pipeline(self, pipeline: AIPipelineOperation, error_code: str) -> None:
+        row = await run_in_threadpool(self.db.get_operation, pipeline.operation_id)
+        if row is None or str(row["status"]) in {"succeeded", "failed", "cancelled"}:
+            return
+        operation = pipeline.request.state.request_operation
+        await run_in_threadpool(
+            self.db.finish_operation_with_event,
+            operation_id=pipeline.operation_id,
+            user_id=pipeline.user_id,
+            request_id=operation.request_id,
+            correlation_id=operation.correlation_id,
+            status="failed",
+            error_code=error_code[:100],
+            event_type="ai_pipeline",
+            http_method=pipeline.request.method,
+            http_path=pipeline.request.url.path,
+            http_status=500,
+            latency_ms=None,
+            metadata={
+                "service": "gateway",
+                "stages": list(pipeline.stages),
+                "failed_stage": pipeline.current_stage,
+            },
+        )
 
     async def begin_request(self, request: Request) -> RequestOperation | None:
         if (
@@ -82,6 +219,7 @@ class OperationStateManager:
         )
         request.state.request_id = request_id
         request.state.correlation_id = correlation_id
+        request.state.request_operation = operation
         return operation
 
     async def finish_request(
@@ -91,6 +229,23 @@ class OperationStateManager:
         status_code: int,
     ) -> None:
         if operation is None:
+            return
+        pipeline_operation_id = getattr(request.state, "pipeline_operation_id", None)
+        if pipeline_operation_id is not None:
+            # Pipeline routes own their multi-request lifecycle. In particular, a
+            # streaming response returns its headers before LLM generation ends,
+            # so this middleware must not mark the shared operation complete.
+            if status_code >= 400:
+                row = await run_in_threadpool(self.db.get_operation, pipeline_operation_id)
+                if row is not None and str(row["status"]) not in {"succeeded", "failed", "cancelled"}:
+                    await run_in_threadpool(
+                        self.db.transition_operation,
+                        pipeline_operation_id,
+                        "failed",
+                        user_id=getattr(request.state, "user_id", None),
+                        error_code=f"http_{status_code}",
+                        reason=f"stage_failed:{getattr(request.state, 'pipeline_stage', 'unknown')}",
+                    )
             return
         latency_ms = max(0, round((time.monotonic() - operation.started_monotonic) * 1000))
         # Credential/profile payloads are never recorded. A successful account

@@ -7,6 +7,9 @@ import type {
   TransactionEvent,
   UserMetric,
   HardwareMonitorResponse,
+  LlmLogLevel,
+  LlmLogResponse,
+  LlmLogSource,
 } from './types';
 
 const explicitApiUrl = import.meta.env.VITE_API_URL as string | undefined;
@@ -176,6 +179,28 @@ export const adminApi = {
   services(token: string, historyLimit = 100, signal?: AbortSignal) {
     return request<HardwareMonitorResponse>(
       `/admin/services${query({ history_limit: historyLimit })}`, {}, token, signal,
+    );
+  },
+  llmLogs(
+    token: string,
+    filters: {
+      afterCursor?: number;
+      limit?: number;
+      source?: LlmLogSource | '';
+      level?: LlmLogLevel | '';
+      modelKey?: string;
+    },
+    signal?: AbortSignal,
+  ) {
+    return request<LlmLogResponse>(
+      `/admin/services/llm/logs${query({
+        after_cursor: filters.afterCursor,
+        limit: filters.limit ?? 200,
+        source: filters.source,
+        level: filters.level,
+        model_key: filters.modelKey,
+      })}`,
+      {}, token, signal,
     );
   },
   async transactions(

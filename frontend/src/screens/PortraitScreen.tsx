@@ -1,3 +1,4 @@
+import { BlurView } from 'expo-blur';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
@@ -8,6 +9,7 @@ import type { Persona, PortraitResponse, PortraitStatus } from '../types';
 type Props = {
   token: string;
   persona: Persona;
+  isActive?: boolean;
 };
 
 const POLL_INTERVAL_MS = 4000;
@@ -34,13 +36,14 @@ function progressCopy(portrait: PortraitResponse) {
   return '자화상 문장과 정확도를 다듬고 있어요.';
 }
 
-export function PortraitScreen({ token, persona }: Props) {
-  const { colors } = useTheme();
+export function PortraitScreen({ token, persona, isActive = true }: Props) {
+  const { colors, darkMode } = useTheme();
   const styles = createStyles(colors);
   const [portrait, setPortrait] = useState<PortraitResponse>();
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState('');
+  const [fallbackAcknowledged, setFallbackAcknowledged] = useState(false);
   const requestInFlight = useRef(false);
 
   const loadPortrait = useCallback(async (showLoading = false) => {
@@ -64,6 +67,14 @@ export function PortraitScreen({ token, persona }: Props) {
   }, [loadPortrait]);
 
   useEffect(() => {
+    if (!isActive) setFallbackAcknowledged(false);
+  }, [isActive]);
+
+  useEffect(() => {
+    setFallbackAcknowledged(false);
+  }, [token]);
+
+  useEffect(() => {
     if (!isAnalyzing(portrait?.status)) return undefined;
     const timer = setInterval(() => {
       void loadPortrait();
@@ -74,9 +85,10 @@ export function PortraitScreen({ token, persona }: Props) {
   const generate = async () => {
     if (generating) return;
     setGenerating(true);
+    setFallbackAcknowledged(false);
     setError('');
     try {
-      const next = await api.generatePortrait(token, persona === 'none' ? 'default' : persona);
+      const next = await api.generatePortrait(token, persona);
       setPortrait(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '자화상 분석을 시작하지 못했어요.');
@@ -110,8 +122,21 @@ export function PortraitScreen({ token, persona }: Props) {
   const current = portrait ?? { status: 'empty' as const };
   const progress = clampPercent(current.progress_percent);
   const accuracy = clampPercent(current.accuracy_percent);
+  const isBelowThresholdCompletion = current.status === 'complete'
+    && current.ready_for_generation === false;
+  const readinessChecks = [
+    { key: 'sessions', label: '세션', current: current.readiness_sessions ?? 0, required: 6, unit: '개' },
+    { key: 'turns', label: '대화', current: current.readiness_turns ?? 0, required: 11, unit: '턴' },
+    { key: 'characters', label: '사용자 글자', current: current.readiness_characters ?? 0, required: 751, unit: '자' },
+  ].map((item) => ({ ...item, met: item.current >= item.required }));
+  const metReadinessCount = readinessChecks.filter((item) => item.met).length;
+  const showCompletedPortraitGate = isActive
+    && isBelowThresholdCompletion
+    && current.status === 'complete'
+    && !fallbackAcknowledged;
 
   return (
+    <View style={styles.root}>
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
         <Text style={styles.eyebrow}>AI SELF PORTRAIT</Text>
@@ -143,6 +168,57 @@ export function PortraitScreen({ token, persona }: Props) {
           >
             {generating ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>나의 자화상 만들기</Text>}
           </Pressable>
+        </View>
+      )}
+
+      {isBelowThresholdCompletion && fallbackAcknowledged && (
+        <View style={styles.stateCard}>
+          <View style={styles.errorSymbol}><Text style={styles.errorSymbolText}>!</Text></View>
+          <Text style={styles.stateTitle}>자화상 분석 기준을 충족하지 못했어요</Text>
+          <Text style={styles.stateDescription}>
+            대화를 조금 더 나누면 새로운 자화상을 만들 수 있어요.
+          </Text>
+          <View style={styles.thresholdCard}>
+            <View
+              accessibilityLabel={`자화상 기준 3개 중 ${metReadinessCount}개 충족`}
+              style={styles.thresholdSummary}
+            >
+              <Text style={styles.thresholdSummaryLabel}>전체 기준</Text>
+              <Text style={styles.thresholdSummaryValue}>3개 중 {metReadinessCount}개 충족</Text>
+            </View>
+            {readinessChecks.map((item) => (
+              <View
+                accessibilityLabel={`${item.label} ${item.met ? '충족' : '미충족'}, 현재 ${item.current}${item.unit}, 기준 ${item.required}${item.unit}`}
+                key={item.key}
+                style={[styles.thresholdRow, item.met ? styles.thresholdRowMet : styles.thresholdRowUnmet]}
+              >
+                <View style={[styles.thresholdIcon, item.met ? styles.thresholdIconMet : styles.thresholdIconUnmet]}>
+                  <Text style={[styles.thresholdIconText, item.met ? styles.thresholdTextMet : styles.thresholdTextUnmet]}>
+                    {item.met ? '✓' : '!'}
+                  </Text>
+                </View>
+                <View style={styles.thresholdCopy}>
+                  <Text style={styles.thresholdLabel}>{item.label}</Text>
+                  <Text style={styles.thresholdValue}>
+                    현재 {formatCount(item.current)}{item.unit} / 기준 {formatCount(item.required)}{item.unit}
+                  </Text>
+                  {!item.met && (
+                    <Text style={styles.thresholdRemaining}>
+                      {formatCount(item.required - item.current)}{item.unit} 더 필요해요
+                    </Text>
+                  )}
+                </View>
+                <View style={[styles.thresholdBadge, item.met ? styles.thresholdBadgeMet : styles.thresholdBadgeUnmet]}>
+                  <Text style={[styles.thresholdBadgeText, item.met ? styles.thresholdTextMet : styles.thresholdTextUnmet]}>
+                    {item.met ? '충족' : '미충족'}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+          <View style={styles.thresholdNotice}>
+            <Text style={styles.thresholdNoticeText}>미충족 기준을 모두 채우면 재생성할 수 있어요.</Text>
+          </View>
         </View>
       )}
 
@@ -181,7 +257,7 @@ export function PortraitScreen({ token, persona }: Props) {
         </View>
       )}
 
-      {current.status === 'complete' && (
+      {current.status === 'complete' && !isBelowThresholdCompletion && (
         <>
           <View style={styles.resultCard}>
             <View style={styles.resultMark}><Text style={styles.resultMarkText}>◐</Text></View>
@@ -246,10 +322,38 @@ export function PortraitScreen({ token, persona }: Props) {
 
       {!!error && !!portrait && <Text style={styles.inlineError}>{error}</Text>}
     </ScrollView>
+    {showCompletedPortraitGate && (
+      <View accessibilityViewIsModal style={styles.revealOverlay}>
+        <BlurView
+          intensity={42}
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+          tint={darkMode ? 'dark' : 'light'}
+        />
+        <View pointerEvents="none" style={styles.revealShade} />
+        <View style={styles.revealCard}>
+          <View style={styles.revealMark}><Text style={styles.revealMarkText}>◐</Text></View>
+          <Text style={styles.revealTitle}>완성된 자화상은 기준치 미만입니다.</Text>
+          <Text style={styles.revealDescription}>
+            정해진 기준을 넘지 않았기 때문에 재생성은 불가능합니다.
+          </Text>
+          <Pressable
+            accessibilityLabel="완성된 자화상 확인"
+            accessibilityRole="button"
+            onPress={() => setFallbackAcknowledged(true)}
+            style={styles.revealButton}
+          >
+            <Text style={styles.revealButtonText}>확인</Text>
+          </Pressable>
+        </View>
+      </View>
+    )}
+    </View>
   );
 }
 
 const createStyles = (colors: ThemeColors) => StyleSheet.create({
+  root: { flex: 1, position: 'relative' },
   content: { flexGrow: 1, paddingHorizontal: 22, paddingTop: 23, paddingBottom: 34 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28, backgroundColor: colors.background },
   loadingText: { color: colors.muted, fontSize: 13, marginTop: 14 },
@@ -268,6 +372,29 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   timeCopy: { flex: 1 },
   timeTitle: { color: colors.primaryDark, fontSize: 12, fontWeight: '900' },
   timeDescription: { color: colors.muted, fontSize: 10, lineHeight: 15, marginTop: 3 },
+  thresholdCard: { width: '100%', gap: 9, marginTop: 18 },
+  thresholdSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderRadius: 14, backgroundColor: colors.subtle, paddingHorizontal: 14, paddingVertical: 12 },
+  thresholdSummaryLabel: { color: colors.muted, fontSize: 11, fontWeight: '800' },
+  thresholdSummaryValue: { color: colors.ink, fontSize: 12, fontWeight: '900' },
+  thresholdRow: { width: '100%', minHeight: 72, flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 11 },
+  thresholdRowMet: { borderColor: colors.success, backgroundColor: colors.surface },
+  thresholdRowUnmet: { borderColor: colors.danger, backgroundColor: colors.dangerSoft },
+  thresholdIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  thresholdIconMet: { backgroundColor: colors.subtle },
+  thresholdIconUnmet: { backgroundColor: colors.dangerSoft },
+  thresholdIconText: { fontSize: 14, fontWeight: '900' },
+  thresholdCopy: { flex: 1 },
+  thresholdLabel: { color: colors.ink, fontSize: 12, fontWeight: '900' },
+  thresholdValue: { color: colors.muted, fontSize: 10, lineHeight: 15, marginTop: 2 },
+  thresholdRemaining: { color: colors.danger, fontSize: 10, lineHeight: 15, fontWeight: '800', marginTop: 1 },
+  thresholdBadge: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 6, marginLeft: 8 },
+  thresholdBadgeMet: { backgroundColor: colors.subtle },
+  thresholdBadgeUnmet: { backgroundColor: colors.dangerSoft },
+  thresholdBadgeText: { fontSize: 10, fontWeight: '900' },
+  thresholdTextMet: { color: colors.success },
+  thresholdTextUnmet: { color: colors.danger },
+  thresholdNotice: { width: '100%', borderRadius: 14, backgroundColor: colors.primarySoft, paddingHorizontal: 14, paddingVertical: 12, marginTop: 14 },
+  thresholdNoticeText: { color: colors.primaryDark, fontSize: 11, lineHeight: 17, fontWeight: '800', textAlign: 'center' },
   primaryButton: { width: '100%', minHeight: 52, borderRadius: 16, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: 18, paddingHorizontal: 18 },
   primaryButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
   secondaryButton: { minWidth: 160, minHeight: 48, borderRadius: 15, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, marginTop: 20 },
@@ -311,4 +438,13 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   errorSymbol: { width: 52, height: 52, borderRadius: 19, backgroundColor: colors.dangerSoft, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   errorSymbolText: { color: colors.danger, fontSize: 24, fontWeight: '900' },
   inlineError: { color: colors.danger, fontSize: 11, lineHeight: 17, textAlign: 'center', marginTop: 12 },
+  revealOverlay: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 20, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 26 },
+  revealShade: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: colors.overlay, opacity: 0.35 },
+  revealCard: { width: '100%', maxWidth: 360, alignItems: 'center', borderRadius: 24, borderWidth: 1, borderColor: colors.lilac, backgroundColor: colors.surface, paddingHorizontal: 22, paddingVertical: 25 },
+  revealMark: { width: 58, height: 58, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primarySoft, marginBottom: 15 },
+  revealMarkText: { color: colors.primaryDark, fontSize: 30 },
+  revealTitle: { color: colors.ink, fontSize: 19, lineHeight: 26, fontWeight: '900', textAlign: 'center' },
+  revealDescription: { color: colors.muted, fontSize: 12, lineHeight: 19, textAlign: 'center', marginTop: 8 },
+  revealButton: { width: '100%', minHeight: 50, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: colors.primary, marginTop: 20 },
+  revealButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
 });

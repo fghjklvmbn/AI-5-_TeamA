@@ -22,6 +22,22 @@ STOPWORDS = {
     "무엇", "뭐가", "어떤", "대해서", "관련", "질문", "알려줘", "알려주세요",
     "오늘", "내일", "모레", "이번", "저번", "정말", "그냥", "혹시",
 }
+AUTOMATIC_PROMOTION_TYPES = {"preference", "profile", "relationship"}
+AUTOMATIC_PROMOTION_THRESHOLDS = {
+    "preference": (0.85, 0.70),
+    "profile": (0.92, 0.80),
+    "relationship": (0.90, 0.78),
+}
+PROMOTION_STOPWORDS = STOPWORDS | {
+    "사용자", "기억", "사실", "정보", "정도", "관련", "대화", "말함", "라고",
+    "한다", "한다는", "입니다", "이에요", "예요", "이야", "라고요",
+}
+KOREAN_TOKEN_SUFFIXES = (
+    "이라고요", "이라고", "이라는", "입니다", "합니다", "한다는", "한다고",
+    "해요", "한다", "이며", "에서", "에게", "으로", "부터", "까지", "처럼",
+    "이라", "라고", "이야", "예요", "이에요", "은", "는", "이", "가", "을", "를",
+    "과", "와", "도", "만", "에",
+)
 
 # 타입 힌트(구분을 위함)
 TYPE_HINTS = {
@@ -237,6 +253,99 @@ class MemoryEngine:
             if memory is not None:
                 result.append(memory)
         return result
+
+    @staticmethod
+    def _promotion_tokens(text: str) -> set[str]:
+        """Normalize enough Korean morphology to compare durable facts across sessions."""
+        result: set[str] = set()
+        for raw_token in TOKEN_RE.findall(str(text or "").lower()):
+            token = raw_token
+            if token.startswith("좋아"):
+                token = "좋아"
+            elif token.startswith("싫어"):
+                token = "싫어"
+            elif token.startswith("선호"):
+                token = "선호"
+            else:
+                for suffix in KOREAN_TOKEN_SUFFIXES:
+                    if len(token) - len(suffix) >= 2 and token.endswith(suffix):
+                        token = token[:-len(suffix)]
+                        break
+            if len(token) >= 2 and token not in PROMOTION_STOPWORDS:
+                result.add(token)
+        return result
+
+    @classmethod
+    def _text_supports_candidate(cls, candidate: MemoryCandidate, text: str) -> bool:
+        candidate_tokens = cls._promotion_tokens(candidate.content)
+        if not candidate_tokens:
+            return False
+        text_tokens = cls._promotion_tokens(text)
+        matches = sum(
+            1 for candidate_token in candidate_tokens
+            if any(
+                candidate_token == text_token
+                or (
+                    min(len(candidate_token), len(text_token)) >= 3
+                    and (
+                        candidate_token.startswith(text_token)
+                        or text_token.startswith(candidate_token)
+                    )
+                )
+                for text_token in text_tokens
+            )
+        )
+        return matches >= min(2, len(candidate_tokens))
+
+    def automatic_long_term_candidates(
+        self,
+        user_id: str,
+        candidates: Iterable[MemoryCandidate],
+        *,
+        max_sessions: int = 30,
+    ) -> list[MemoryCandidate]:
+        """Promote only strong, stable evidence repeated across separate sessions."""
+        sessions = self.db.list_sessions(user_id)[:max_sessions]
+        transcripts = {
+            str(session["id"]): [str(row["user_text"] or "") for row in self.db.get_all_history(
+                user_id, str(session["id"]),
+            )]
+            for session in sessions
+        }
+        promoted: list[MemoryCandidate] = []
+        for candidate in candidates:
+            if candidate.memory_type not in AUTOMATIC_PROMOTION_TYPES:
+                continue
+            minimum_confidence, minimum_importance = AUTOMATIC_PROMOTION_THRESHOLDS[
+                candidate.memory_type
+            ]
+            if (
+                candidate.confidence < minimum_confidence
+                or candidate.importance < minimum_importance
+            ):
+                continue
+            supporting_sessions = sum(
+                1 for texts in transcripts.values()
+                if any(self._text_supports_candidate(candidate, text) for text in texts)
+            )
+            if supporting_sessions >= 2:
+                candidate_tokens = self._promotion_tokens(candidate.content)
+                duplicate_index = next((
+                    index for index, existing in enumerate(promoted)
+                    if existing.memory_type == candidate.memory_type
+                    and (
+                        len(candidate_tokens & self._promotion_tokens(existing.content))
+                        / max(1, len(candidate_tokens | self._promotion_tokens(existing.content)))
+                    ) >= 0.6
+                ), None)
+                if duplicate_index is None:
+                    promoted.append(candidate)
+                elif (
+                    candidate.confidence + candidate.importance
+                    > promoted[duplicate_index].confidence + promoted[duplicate_index].importance
+                ):
+                    promoted[duplicate_index] = candidate
+        return promoted
 
     # 메모리 엔진 발동 조건 추출
     def extract_rule_candidates(self, text: str) -> list[MemoryCandidate]:

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { api } from '../api';
 import { useTheme, type ThemeColors } from '../theme';
@@ -24,6 +24,11 @@ function modelInstances(model: LocalModel) {
   return Array.isArray(model.loaded_instances) ? model.loaded_instances : [];
 }
 
+function modelQuantization(model: LocalModel): string {
+  if (typeof model.quantization === 'string') return model.quantization;
+  return model.quantization?.name || '';
+}
+
 function downloadModelName(model?: string): string {
   if (!model) return '모델 정보 확인 중';
   const normalized = model.replace(/\/$/, '');
@@ -42,10 +47,10 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
   const [busyKey, setBusyKey] = useState<string>();
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState('');
-  const [deleteTarget, setDeleteTarget] = useState<LocalModel>();
   const [expanded, setExpanded] = useState(false);
   const [quota, setQuota] = useState({ used: 0, total: 10 * 1024 ** 3 });
   const mounted = useRef(true);
+  const modelLoadInProgress = busyKey?.startsWith('load:') === true;
   const visibleDownloadJobs = Object.entries(jobs).filter(([, job]) => ![
     'completed', 'complete', 'downloaded', 'already_downloaded',
   ].includes((job.status ?? '').toLowerCase()));
@@ -181,20 +186,6 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
     } finally { setBusyKey(undefined); }
   };
 
-  const remove = async () => {
-    if (!deleteTarget) return;
-    const target = deleteTarget;
-    setDeleteTarget(undefined); setBusyKey(`delete:${target.key}`); setMessage('');
-    try {
-      await api.deleteModel(token, target.key);
-      if (selectedModelKey === target.key) onSelectedModelKeyChange(undefined);
-      await refresh();
-      setMessage(`${target.display_name || target.key} 파일을 삭제했습니다.`);
-    } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : '모델을 삭제하지 못했습니다.');
-    } finally { setBusyKey(undefined); }
-  };
-
   return (
     <View style={styles.section}>
       <View style={styles.headingRow}>
@@ -283,28 +274,40 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
       {models.map((model) => {
         const loaded = modelInstances(model).length > 0;
         const selected = selectedModelKey === model.key;
-        return <View key={model.key} style={[styles.card, selected && styles.cardSelected]}>
-          <View style={styles.modelTitleRow}><Text numberOfLines={1} style={styles.cardTitle}>{model.display_name || model.key}</Text>{loaded && <Text style={styles.badge}>로드됨</Text>}</View>
-          <Text numberOfLines={1} style={styles.muted}>{model.key}{model.quantization ? ` · ${model.quantization}` : ''}{model.size_bytes ? ` · ${readableBytes(model.size_bytes)}` : ''}</Text>
+        const quantization = modelQuantization(model);
+        const loadingThisModel = busyKey === `load:${model.key}`;
+        return <View
+          accessibilityState={{ disabled: modelLoadInProgress }}
+          key={model.key}
+          style={[styles.card, selected && styles.cardSelected, modelLoadInProgress && styles.modelCardDisabled]}
+        >
+          <View style={styles.modelTitleRow}><Text numberOfLines={1} style={styles.cardTitle}>{model.display_name || model.key}</Text>{model.processing ? <Text style={styles.processingBadge}>처리중</Text> : loaded && <Text style={styles.badge}>로드됨</Text>}</View>
+          <Text numberOfLines={1} style={styles.muted}>{model.key}{quantization ? ` · ${quantization}` : ''}{model.size_bytes ? ` · ${readableBytes(model.size_bytes)}` : ''}</Text>
           <View style={styles.actionRow}>
             {loaded ? <>
-              <Pressable onPress={() => onSelectedModelKeyChange(model.key)} style={[styles.primaryButton, selected && styles.disabled]}><Text style={styles.primaryText}>{selected ? '선택됨' : '대화에 선택'}</Text></Pressable>
-              <Pressable disabled={!!busyKey} onPress={() => void unload(model)} style={styles.secondaryButton}><Text style={styles.secondaryText}>언로드</Text></Pressable>
-            </> : <Pressable disabled={!!busyKey || !status?.server_online} onPress={() => void load(model)} style={styles.primaryButton}><Text style={styles.primaryText}>40K로 로드 및 선택</Text></Pressable>}
-            {!loaded && <Pressable disabled={!!busyKey || !status?.delete_supported} onPress={() => setDeleteTarget(model)} style={[styles.dangerButton, !status?.delete_supported && styles.disabled]}><Text style={styles.dangerText}>삭제</Text></Pressable>}
+              <Pressable disabled={!!busyKey || selected} onPress={() => onSelectedModelKeyChange(model.key)} style={[styles.primaryButton, (!!busyKey || selected) && styles.disabled]}><Text style={styles.primaryText}>{selected ? '선택됨' : '대화에 선택'}</Text></Pressable>
+              <Pressable
+                accessibilityLabel={`${model.display_name || model.key} ${model.processing ? '처리중' : '언로드'}`}
+                accessibilityRole="button"
+                disabled={!!busyKey || model.processing}
+                onPress={() => void unload(model)}
+                style={[styles.secondaryButton, (!!busyKey || model.processing) && styles.disabled]}
+              ><Text style={styles.secondaryText}>{model.processing ? '처리중' : '언로드'}</Text></Pressable>
+            </> : <Pressable
+              accessibilityLabel={loadingThisModel ? `${model.display_name || model.key} 로드중` : `${model.display_name || model.key} 로드`}
+              disabled={!!busyKey || !status?.server_online}
+              onPress={() => void load(model)}
+              style={[styles.primaryButton, (!!busyKey || !status?.server_online) && styles.disabled]}
+            >
+              {loadingThisModel ? <View style={styles.loadingButtonContent}>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.primaryText}>로드중</Text>
+              </View> : <Text style={styles.primaryText}>로드</Text>}
+            </Pressable>}
           </View>
         </View>;
       })}
-      {!!status?.delete_reason && <Text style={styles.muted}>{status.delete_reason}</Text>}
       </>}
-
-      <Modal transparent visible={!!deleteTarget} animationType="fade" onRequestClose={() => setDeleteTarget(undefined)}>
-        <View style={styles.modalShade}><View style={styles.modalCard}>
-          <Text style={styles.title}>모델 파일을 삭제할까요?</Text>
-          <Text style={styles.modalText}>{deleteTarget?.display_name || deleteTarget?.key}{'\n'}LM Studio 저장소에서 파일이 영구 삭제됩니다.</Text>
-          <View style={styles.actionRow}><Pressable onPress={() => setDeleteTarget(undefined)} style={styles.secondaryButton}><Text style={styles.secondaryText}>취소</Text></Pressable><Pressable onPress={() => void remove()} style={styles.dangerButton}><Text style={styles.dangerText}>삭제</Text></Pressable></View>
-        </View></View>
-      </Modal>
     </View>
   );
 }
@@ -322,15 +325,17 @@ function createStyles(colors: ThemeColors) {
     quantRow: { alignItems: 'center', flexDirection: 'row', gap: 8 }, quantInput: { backgroundColor: colors.background, borderColor: colors.border, borderRadius: 10, borderWidth: 1, color: colors.ink, minWidth: 110, paddingHorizontal: 10, paddingVertical: 7 },
     primaryButton: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 11, justifyContent: 'center', minHeight: 40, paddingHorizontal: 13 }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '800' },
     secondaryButton: { alignItems: 'center', borderColor: colors.border, borderRadius: 11, borderWidth: 1, justifyContent: 'center', minHeight: 40, paddingHorizontal: 13 }, secondaryText: { color: colors.ink, fontSize: 12, fontWeight: '700' },
-    dangerButton: { alignItems: 'center', backgroundColor: '#3a2028', borderRadius: 11, justifyContent: 'center', minHeight: 40, paddingHorizontal: 13 }, dangerText: { color: '#ff8790', fontSize: 12, fontWeight: '800' }, disabled: { opacity: 0.45 },
+    disabled: { opacity: 0.45 },
+    modelCardDisabled: { opacity: 0.55 },
+    loadingButtonContent: { alignItems: 'center', flexDirection: 'row', gap: 7 },
     card: { backgroundColor: colors.background, borderColor: colors.border, borderRadius: 14, borderWidth: 1, gap: 7, padding: 13 }, cardSelected: { borderColor: colors.primary, borderWidth: 2 }, cardTitle: { color: colors.ink, flex: 1, fontSize: 13, fontWeight: '800' },
     modelTitleRow: { alignItems: 'center', flexDirection: 'row', gap: 8 }, badge: { backgroundColor: colors.primarySoft, borderRadius: 10, color: colors.primary, fontSize: 10, fontWeight: '800', overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 4 }, actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    processingBadge: { backgroundColor: colors.dangerSoft, borderRadius: 10, color: colors.danger, fontSize: 10, fontWeight: '800', overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 4 },
     job: { backgroundColor: colors.background, borderRadius: 14, gap: 7, padding: 13 }, jobHeader: { alignItems: 'center', flexDirection: 'row', gap: 8 }, dismissButton: { alignItems: 'center', borderRadius: 10, height: 30, justifyContent: 'center', width: 30 }, dismissButtonPressed: { backgroundColor: colors.dangerSoft }, dismissText: { color: colors.muted, fontSize: 22, lineHeight: 24 }, track: { backgroundColor: colors.border, borderRadius: 4, height: 7, overflow: 'hidden' }, fill: { backgroundColor: colors.primary, borderRadius: 4, height: 7 },
     message: { backgroundColor: colors.primarySoft, borderRadius: 10, color: colors.ink, fontSize: 12, lineHeight: 18, padding: 10 }, error: { color: '#ef6b73', fontSize: 12, lineHeight: 18 },
     headerIconButton: { alignItems: 'center', borderRadius: 12, height: 42, justifyContent: 'center', width: 42 },
     headerIcon: { height: 24, resizeMode: 'contain', width: 24 },
     expandTogglePressed: { backgroundColor: colors.primarySoft },
     emptyDownload: { backgroundColor: colors.subtle, borderRadius: 12, color: colors.muted, fontSize: 12, lineHeight: 18, padding: 12, textAlign: 'center' },
-    modalShade: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.65)', flex: 1, justifyContent: 'center', padding: 24 }, modalCard: { backgroundColor: colors.surface, borderRadius: 20, gap: 16, maxWidth: 420, padding: 22, width: '100%' }, modalText: { color: colors.muted, fontSize: 14, lineHeight: 22 },
   });
 }

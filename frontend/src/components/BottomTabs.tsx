@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { useTheme, type ThemeColors } from '../theme';
 
@@ -15,7 +15,8 @@ const tabs: { key: Tab; icon: string; label: string }[] = [
 
 export function BottomTabs({ current, onChange }: { current: Tab; onChange: (tab: Tab) => void }) {
   const { colors } = useTheme();
-  const styles = createStyles(colors);
+  const { width } = useWindowDimensions();
+  const styles = createStyles(colors, width <= 480);
   return (
     <View style={styles.bar}>
       {tabs.map((tab) => {
@@ -37,21 +38,21 @@ export function BottomTabs({ current, onChange }: { current: Tab; onChange: (tab
   );
 }
 
-const createStyles = (colors: ThemeColors) => StyleSheet.create({
+const createStyles = (colors: ThemeColors, compact: boolean) => StyleSheet.create({
   bar: {
-    minHeight: 72,
-    paddingHorizontal: 10,
-    paddingBottom: 8,
-    paddingTop: 7,
+    minHeight: compact ? 62 : 72,
+    paddingHorizontal: compact ? 5 : 10,
+    paddingBottom: compact ? 5 : 8,
+    paddingTop: compact ? 5 : 7,
     backgroundColor: colors.surface,
     borderTopColor: colors.border,
     borderTopWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
   },
-  item: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, borderRadius: 18 },
+  item: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: compact ? 1 : 3, borderRadius: compact ? 14 : 18 },
   activeItem: { backgroundColor: colors.primarySoft },
-  icon: { color: colors.muted, fontSize: 20, lineHeight: 23 },
-  label: { color: colors.muted, fontSize: 11, fontWeight: '600' },
+  icon: { color: colors.muted, fontSize: compact ? 17 : 20, lineHeight: compact ? 20 : 23 },
+  label: { color: colors.muted, fontSize: compact ? 9 : 11, fontWeight: '600' },
   activeText: { color: colors.primaryDark },
 });
 

@@ -12,6 +12,7 @@ from .admin_schemas import (
     AdminCorrelationResponse,
     AdminDeactivateRequest,
     AdminMeResponse,
+    AdminLlmLogResponse,
     AdminOperationListResponse,
     AdminOverviewResponse,
     AdminTransactionListResponse,
@@ -114,6 +115,25 @@ async def service_hardware_status(
     _admin: CurrentAdmin = Depends(get_current_admin),
 ):
     return await request.app.state.hardware_monitor.snapshot(history_limit)
+
+
+@router.get("/services/llm/logs", response_model=AdminLlmLogResponse)
+async def llm_server_logs(
+    request: Request,
+    after_cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    source: Literal["server", "runtime", "model"] | None = Query(default=None),
+    level: Literal["trace", "debug", "info", "warn", "error", "fatal"] | None = Query(default=None),
+    model_key: str | None = Query(default=None, max_length=300),
+    _admin: CurrentAdmin = Depends(get_current_admin),
+):
+    return await request.app.state.hardware_monitor.llm_logs(
+        after_cursor=after_cursor,
+        limit=limit,
+        source=source or "",
+        level=level or "",
+        model_key=(model_key or "").strip(),
+    )
 
 
 @router.get("/transactions", response_model=AdminTransactionListResponse)

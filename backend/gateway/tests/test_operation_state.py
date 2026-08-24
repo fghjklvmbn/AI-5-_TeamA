@@ -1,11 +1,65 @@
+import asyncio
 from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from memorypal_api.app import create_app
 from memorypal_api.config import load_settings
 from memorypal_api.database import Database
+from memorypal_api.services.operation_state import OperationStateManager
+
+
+def _pipeline_request(path: str, correlation_id: str, stages: str) -> Request:
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": path,
+        "root_path": "",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 1234),
+        "query_string": b"",
+        "headers": [
+            (b"x-correlation-id", correlation_id.encode()),
+            (b"x-ai-pipeline-stages", stages.encode()),
+        ],
+    })
+
+
+def test_ai_pipeline_uses_one_operation_and_equal_stage_progress(tmp_path):
+    db = Database(tmp_path / "pipeline.db")
+    db.initialize()
+    manager = OperationStateManager(db)
+    correlation_id = "pipeline-correlation-0001"
+
+    async def run_pipeline():
+        for stage, path, expected_progress in (
+            ("stt", "/v1/voice/transcribe", 33),
+            ("llm", "/v1/chat/messages/stream", 67),
+            ("tts", "/v1/chat/messages/message-1/audio", 100),
+        ):
+            request = _pipeline_request(path, correlation_id, "stt,llm,tts")
+            await manager.begin_request(request)
+            operation = await manager.start_pipeline(
+                request, "user-0001", stage, (stage,),
+            )
+            await operation.complete_stage()
+            row = db.get_operation(operation.operation_id)
+            assert row["progress_percent"] == expected_progress
+        return operation.operation_id
+
+    operation_id = asyncio.run(run_pipeline())
+    rows = db.list_operations(correlation_id=correlation_id)
+    assert [row["id"] for row in rows] == [operation_id]
+    assert rows[0]["status"] == "succeeded"
+    transitions = db.fetch_all(
+        "SELECT progress_percent, reason FROM operation_state_transitions "
+        "WHERE operation_id = ? ORDER BY version",
+        (operation_id,),
+    )
+    assert [row["progress_percent"] for row in transitions] == [0, 33, 67, 100]
 
 
 def test_operation_state_enforces_version_progress_and_terminal_status(tmp_path):

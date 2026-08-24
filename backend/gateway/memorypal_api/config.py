@@ -158,6 +158,7 @@ class Settings:
     llm_default_model: str
     llm_companion_model: str
     llm_embedding_model: str
+    llm_utility_model: str
     llm_character_cue_enabled: bool
     lmstudio_model_root: Path | None
     lmstudio_cli: str
@@ -221,6 +222,9 @@ def load_settings() -> Settings:
         llm_embedding_model=os.getenv(
             "MEMORYPAL_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5",
         ),
+        llm_utility_model=os.getenv(
+            "MEMORYPAL_UTILITY_LLM_MODEL", "hyperclovax-seed-text-instruct-1.5b",
+        ).strip() or "hyperclovax-seed-text-instruct-1.5b",
         llm_character_cue_enabled=os.getenv(
             "MEMORYPAL_LLM_CHARACTER_CUE_ENABLED", "true",
         ).strip().casefold() not in {"0", "false", "no", "off"},

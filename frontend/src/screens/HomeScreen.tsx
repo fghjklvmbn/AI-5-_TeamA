@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { api } from '../api';
+import { api, createAIPipelineTrace } from '../api';
 import { unlockWebAudio } from '../audioPlayback';
 import { RecordingOrb } from '../components/RecordingOrb';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
@@ -84,6 +84,9 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelBusyKey, setModelBusyKey] = useState<string>();
   const [modelError, setModelError] = useState('');
+  const [serverModel, setServerModel] = useState<{
+    model_key?: string | null; display_name?: string; loaded?: boolean;
+  }>();
   const [status, setStatus] = useState('가운데 버튼을 누르고 편하게 말해 보세요.');
   const mountedRef = useRef(true);
 
@@ -100,15 +103,12 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
     { id: 'emotional_companion', label: '정서적 동반자', detail: '공감 중심 대화' },
     { id: 'none', label: '없음', detail: '역할 설정 없는 일반 채팅' },
   ];
-  const activeModelKey = persona === 'emotional_companion'
-    ? 'memorypal_ai'
-    : persona === 'default'
-      ? 'qwen3.5-4b'
-      : modelKey || 'qwen3.5-4b';
+  const activeModelKey = serverModel?.model_key || modelKey || '';
   const activeLocalModel = localModels.find((model) => model.key === activeModelKey);
-  const activeModelLabel = persona === 'emotional_companion'
-    ? 'MemoryPal 정서적 동반자'
-    : activeLocalModel?.display_name || activeModelKey;
+  const activeModelLabel = serverModel?.display_name
+    || activeLocalModel?.display_name
+    || activeModelKey
+    || 'LM Studio 상태 확인 중';
 
   const refreshModels = async () => {
     setModelsLoading(true);
@@ -137,7 +137,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
     try {
       if (!model.loaded_instances?.length) await api.loadModel(token, model.key, 40960);
       if (!mountedRef.current) return;
-      onPersonaChange('none');
+      if (persona === 'emotional_companion') onPersonaChange('default');
       onModelKeyChange(model.key);
       setModelMenuOpen(false);
       await refreshModels();
@@ -174,6 +174,21 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
   }, [token]);
 
   useEffect(() => {
+    let active = true;
+    setServerModel(undefined);
+    const refreshCurrentModel = () => {
+      void api.modelSelection(token, persona).then((current) => {
+        if (active) setServerModel(current);
+      }).catch(() => {
+        if (active) setServerModel(undefined);
+      });
+    };
+    refreshCurrentModel();
+    const timer = setInterval(refreshCurrentModel, 30_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [modelKey, persona, token]);
+
+  useEffect(() => {
     if (!profileMenuOpen || Platform.OS !== 'web' || typeof document === 'undefined') return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setProfileMenuOpen(false);
@@ -193,7 +208,10 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
       setProcessing(true);
       onVoiceProcessingChange(true);
       setStatus('기억을 살펴보고 답변을 만들고 있어요…');
-      const transcript = await recorder.stop();
+      const pipelineTrace = createAIPipelineTrace([
+        'stt', 'llm', ...(voiceReplyEnabled ? ['tts' as const] : []),
+      ]);
+      const transcript = await recorder.stop(pipelineTrace);
       if (!mountedRef.current) return;
       if (!transcript) {
         setStatus('잘 들리지 않았어요. 조금 더 가까이에서 다시 말해 주세요.');
@@ -205,6 +223,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
         token, transcript, undefined, voiceId, voiceReplyEnabled, casualMode, persona, internetEnabled, thinkingMode,
         reasoningEffort,
         modelKey,
+        pipelineTrace,
       );
       if (!mountedRef.current) return;
       setStatus('답변이 준비됐어요.');
@@ -252,7 +271,9 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
           style={({ pressed }) => [styles.currentModel, pressed && styles.currentModelPressed]}
         >
           <View style={styles.currentModelCopy}>
-            <Text style={styles.currentModelCaption}>현재 모델</Text>
+            <Text style={styles.currentModelCaption}>
+              현재 모델 · {serverModel?.loaded ? 'LM Studio 로드됨' : '선택 시 자동 로드'}
+            </Text>
             <Text numberOfLines={1} style={styles.currentModelValue}>{activeModelLabel}</Text>
           </View>
           <Text style={styles.currentModelAction}>선택</Text>
@@ -329,7 +350,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
           <View style={styles.modelSheetHeader}>
             <View style={styles.modelSheetHeaderCopy}>
               <Text style={styles.modelSheetTitle}>대화 모델 선택</Text>
-              <Text style={styles.modelSheetDescription}>선택하면 페르소나가 ‘없음’으로 전환됩니다.</Text>
+              <Text style={styles.modelSheetDescription}>기본 페르소나에서도 선택한 모델을 그대로 사용합니다.</Text>
             </View>
             <Pressable accessibilityLabel="모델 선택 닫기" onPress={() => setModelMenuOpen(false)} style={styles.modelClose}>
               <Text style={styles.modelCloseText}>×</Text>
@@ -341,7 +362,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
             <ScrollView style={styles.modelList} showsVerticalScrollIndicator={false}>
               {!localModels.length && <Text style={styles.modelEmpty}>선택할 수 있는 다운로드된 LLM이 없습니다.{`\n`}설정에서 모델을 먼저 다운로드해 주세요.</Text>}
               {localModels.map((model) => {
-                const selected = persona === 'none' && model.key === modelKey;
+                const selected = persona !== 'emotional_companion' && model.key === activeModelKey;
                 const loaded = !!model.loaded_instances?.length;
                 const busy = modelBusyKey === model.key;
                 return (
@@ -363,7 +384,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
             </ScrollView>
           )}
           {!!modelError && <Text style={styles.modelError}>{modelError}</Text>}
-          <Text style={styles.modelHint}>모델 다운로드와 삭제는 설정 › 직접 모델 관리에서 할 수 있습니다.</Text>
+          <Text style={styles.modelHint}>모델 다운로드와 로드는 설정 › 직접 모델 관리에서 할 수 있습니다.</Text>
         </Pressable>
       </Pressable>
     </Modal>

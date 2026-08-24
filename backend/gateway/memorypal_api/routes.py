@@ -10,11 +10,12 @@ import unicodedata
 import uuid
 from pathlib import Path
 from contextlib import suppress
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from .dependencies import CurrentUser, get_current_user
 from .database import AccountAccessFenceError, DatabaseIntegrityError
@@ -49,6 +50,7 @@ from .services.document_engine import DocumentExtractionError
 from .services.archive_cleanup import run_immediate_archive_cleanup
 from .services.memory_engine import MemoryCandidate
 from .services.pipeline import PipelineUnavailable
+from .services.portrait_engine import PortraitEngine
 from .services.model_manager import ModelManagerConflict, ModelManagerError
 from .services.web_search import WebSource
 
@@ -70,10 +72,18 @@ async def model_capabilities(
 ):
     if persona not in {"default", "emotional_companion", "none"}:
         raise HTTPException(status_code=422, detail="Unsupported persona")
-    if model_key and persona != "none":
-        raise HTTPException(status_code=422, detail="직접 선택 모델은 페르소나 없음에서만 사용할 수 있습니다.")
+    if model_key and persona == "emotional_companion":
+        raise HTTPException(status_code=422, detail="정서적 동반자는 전용 모델을 사용합니다.")
     model = model_key or request.app.state.pipeline.model_for_persona(persona)
-    return await request.app.state.pipeline.reasoning_capabilities(model)
+    capabilities = await request.app.state.pipeline.reasoning_capabilities(model)
+    if persona == "emotional_companion":
+        return {
+            **capabilities,
+            "thinking_supported": False,
+            "reasoning_efforts": [],
+            "default_reasoning": "off",
+        }
+    return capabilities
 
 
 def require_model_service_token(
@@ -207,6 +217,43 @@ def append_web_sources(answer: str, sources: list[WebSource]) -> str:
         lines.append(f"- [{title}]({source.url})")
     return answer.rstrip() + "\n\n" + "\n".join(lines)
 
+
+def spoken_answer_text(answer: str) -> str:
+    """Return only the answer body, excluding display-only web citations."""
+    marker = re.search(r"(?:^|\n)###\s+검색 출처\s*(?:\n|$)", answer)
+    return answer[:marker.start()].strip() if marker else answer.strip()
+
+
+def consume_request_attachments(
+    db, user_id: str, attachment_ids: list[str], auth_version: int,
+) -> None:
+    """Deactivate only files captured for this successful request."""
+    if not attachment_ids:
+        return
+    db.consume_attachments(
+        user_id, attachment_ids, expected_auth_version=auth_version,
+    )
+
+
+def attachment_refs_json(rows) -> str:
+    return json.dumps(
+        [attachment_response(row).model_dump() for row in rows],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+
+
+def merged_attachment_refs_json(conversation, rows) -> str:
+    try:
+        current = json.loads(str(conversation["attachment_refs_json"] or "[]"))
+        refs = current if isinstance(current, list) else []
+    except (KeyError, TypeError, ValueError):
+        refs = []
+    by_id = {str(item.get("id")): item for item in refs if isinstance(item, dict) and item.get("id")}
+    for row in rows:
+        item = attachment_response(row).model_dump()
+        by_id[item["id"]] = item
+    return json.dumps(list(by_id.values()), ensure_ascii=False, separators=(",", ":"))
+
 # 메모리 응답(참조)
 def memory_response(row) -> MemoryResponse:
     return MemoryResponse(
@@ -220,17 +267,38 @@ def memory_response(row) -> MemoryResponse:
     )
 
 
-def portrait_response(row) -> PortraitResponse:
+def portrait_response(
+    row,
+    readiness_counts: tuple[int, int, int] = (0, 0, 0),
+) -> PortraitResponse:
+    readiness_sessions, readiness_turns, readiness_characters = readiness_counts
+    ready_for_generation = PortraitEngine.readiness_error(readiness_counts) is None
     if row is None:
-        return PortraitResponse(status="empty")
+        return PortraitResponse(
+            status="empty",
+            ready_for_generation=ready_for_generation,
+            readiness_sessions=readiness_sessions,
+            readiness_turns=readiness_turns,
+            readiness_characters=readiness_characters,
+        )
+    summary = row["summary"]
+    title = row["title"]
+    if row["status"] == "complete" and summary:
+        # Older one-shot portraits may contain a valid-looking but unrelated
+        # title. Align their presentation without mutating the audit record.
+        title = PortraitEngine.aligned_title(title, summary)
     return PortraitResponse(
         status=row["status"],
         persona=row["persona"],
-        title=row["title"],
-        summary=row["summary"],
+        title=title,
+        summary=summary,
         accuracy_percent=row["accuracy_percent"],
         analyzed_sessions=row["analyzed_sessions"],
         analyzed_messages=row["analyzed_messages"],
+        ready_for_generation=ready_for_generation,
+        readiness_sessions=readiness_sessions,
+        readiness_turns=readiness_turns,
+        readiness_characters=readiness_characters,
         progress_percent=row["progress_percent"],
         vector_method=row["vector_method"],
         started_at=row["started_at"],
@@ -238,6 +306,11 @@ def portrait_response(row) -> PortraitResponse:
         updated_at=row["updated_at"],
         error=row["error"],
     )
+
+
+def portrait_readiness(db, user_id: str) -> tuple[int, int, int]:
+    """Count the account-owned conversation evidence required for a portrait."""
+    return PortraitEngine.readiness_counts(db, user_id)
 
 
 def portrait_operation_for(
@@ -359,6 +432,7 @@ def health(request: Request):
         "database": request.app.state.db.backend_name,
         "task_queue": request.app.state.settings.task_queue_mode,
         "state_tracking": "operation+transaction+outbox",
+        "utility_model": request.app.state.settings.llm_utility_model,
         "pipeline": [
             "whisper-turbo", request.app.state.settings.llm_default_model,
             request.app.state.settings.llm_companion_model, "qwen3-tts",
@@ -571,7 +645,31 @@ async def create_attachment(
     return attachment_response(db.create_attachment(
         user.id, session_id, filename, file.content_type or "application/octet-stream",
         len(content), text_content, expected_auth_version=user.auth_version,
+        file_content=content,
     ))
+
+
+@router.get("/attachments/{attachment_id}/content")
+def attachment_content(
+    attachment_id: str, request: Request, user: CurrentUser = Depends(get_current_user),
+):
+    row = request.app.state.db.get_attachment(user.id, attachment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="첨부파일을 찾을 수 없습니다.")
+    raw = row["file_content"] if "file_content" in row.keys() else None
+    if raw is None:
+        content = str(row["text_content"] or "").encode("utf-8")
+        filename = f"{Path(str(row['filename'])).stem or 'attachment'}.txt"
+        media_type = "text/plain; charset=utf-8"
+    else:
+        content = bytes(raw)
+        filename = Path(str(row["filename"] or "attachment")).name
+        media_type = str(row["content_type"] or "application/octet-stream")
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.delete("/attachments/{attachment_id}", status_code=204)
@@ -600,16 +698,24 @@ async def _create_chat_response(
     request: Request,
     user: CurrentUser,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
+    pipeline_operation=None,
 ) -> ChatResponse:
-    if payload.model_key and payload.persona != "none":
-        raise HTTPException(status_code=422, detail="직접 선택 모델은 페르소나 없음에서만 사용할 수 있습니다.")
-    if payload.model_key:
-        try:
-            await request.app.state.model_manager.ensure_loaded(payload.model_key)
-        except ModelManagerConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ModelManagerError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if payload.model_key and payload.persona == "emotional_companion":
+        raise HTTPException(status_code=422, detail="정서적 동반자는 전용 모델을 사용합니다.")
+    try:
+        if payload.persona == "emotional_companion":
+            await request.app.state.model_manager.ensure_companion_model()
+            logger.info(
+                "Companion model activated: user=%s model=%s",
+                user.id,
+                request.app.state.settings.llm_companion_model,
+            )
+        elif payload.model_key:
+            await request.app.state.model_manager.ensure_user_model(user.id, payload.model_key)
+    except ModelManagerConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ModelManagerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     db = request.app.state.db
     engine = request.app.state.memory_engine
     pipeline = request.app.state.pipeline
@@ -624,6 +730,8 @@ async def _create_chat_response(
     session = session or db.create_session(
         user.id, expected_auth_version=user.auth_version,
     )
+    request_attachment_rows = list(db.list_attachments(user.id, session["id"]))
+    request_attachment_ids = [str(row["id"]) for row in request_attachment_rows]
     history_rows = db.get_history(user.id, session["id"], limit=10)
     session_context = db.get_session_working_memory(user.id, session["id"])
     if not session_context and history_rows:
@@ -638,7 +746,7 @@ async def _create_chat_response(
         memory_engine=engine,
         document_engine=request.app.state.document_engine,
         web_search_engine=request.app.state.web_search_engine,
-        model_override=payload.model_key if payload.persona == "none" else None,
+        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
     )
     memories = agent_context.memories
     document_context = agent_context.document_context
@@ -651,7 +759,7 @@ async def _create_chat_response(
             web_context=web_context,
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
-            model_override=payload.model_key if payload.persona == "none" else None,
+            model_override=payload.model_key if payload.persona != "emotional_companion" else None,
             max_answer_chars=200 if payload.speak else None,
             on_delta=on_delta,
         )
@@ -660,19 +768,32 @@ async def _create_chat_response(
     character_cue = await pipeline.generate_character_cue(
         answer,
         persona=payload.persona,
-        model_override=payload.model_key if payload.persona == "none" else None,
+        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
     )
+    if pipeline_operation is not None:
+        await pipeline_operation.complete_stage()
     audio_url = (
         await pipeline.synthesize(answer, payload.voice_id, character_cue["voice_style"])
         if payload.speak else None
     )
+    if payload.speak and pipeline_operation is not None and "tts" in pipeline_operation.stages:
+        pipeline_operation.move_to("tts")
+        await pipeline_operation.complete_stage()
     answer = append_web_sources(answer, agent_context.web_sources)
     try:
         conversation = db.save_conversation(
             user.id, session["id"], payload.text, answer,
             output_audio_path=audio_url,
             character_cue_json=serialize_character_cue(character_cue),
+            attachment_refs_json=attachment_refs_json(request_attachment_rows),
             expected_auth_version=user.auth_version,
+        )
+    except AccountAccessFenceError as exc:
+        require_write_fence(request, user)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        consume_request_attachments(
+            db, user.id, request_attachment_ids, user.auth_version,
         )
     except AccountAccessFenceError as exc:
         require_write_fence(request, user)
@@ -716,6 +837,9 @@ async def _create_chat_response(
                 candidates.extend(await pipeline.extract_memories(
                     payload.text, persona=payload.persona,
                 ))
+                candidates = engine.automatic_long_term_candidates(
+                    user.id, candidates,
+                )
             if not db.is_account_fence_valid(user.id, user.auth_version):
                 logger.info(
                     "Skipping chat memory postprocessing after account fence changed: user=%s",
@@ -752,7 +876,14 @@ async def _create_chat_response(
 
 @router.post("/chat/messages", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request, user: CurrentUser = Depends(get_current_user)):
-    return await _create_chat_response(payload, request, user)
+    operation = await request.app.state.operation_state_manager.start_pipeline(
+        request, user.id, "llm", ("llm", "tts") if payload.speak else ("llm",),
+    )
+    try:
+        return await _create_chat_response(payload, request, user, pipeline_operation=operation)
+    except Exception:
+        await operation.fail("chat_failed")
+        raise
 
 
 @router.post("/chat/messages/stream")
@@ -761,6 +892,10 @@ async def stream_chat(
     request: Request,
     user: CurrentUser = Depends(get_current_user),
 ):
+    operation = await request.app.state.operation_state_manager.start_pipeline(
+        request, user.id, "llm", ("llm", "tts") if payload.speak else ("llm",),
+    )
+
     async def events():
         queue: asyncio.Queue[dict | None] = asyncio.Queue(maxsize=32)
 
@@ -769,14 +904,21 @@ async def stream_chat(
 
         async def run_chat() -> None:
             try:
-                response = await _create_chat_response(payload, request, user, on_delta=on_delta)
+                response = await _create_chat_response(
+                    payload, request, user, on_delta=on_delta, pipeline_operation=operation,
+                )
                 await queue.put({
                     "type": "complete",
                     "response": response.model_dump(mode="json"),
                 })
             except HTTPException as exc:
+                await operation.fail(f"http_{exc.status_code}")
                 await queue.put({"type": "error", "status": exc.status_code, "detail": exc.detail})
+            except asyncio.CancelledError:
+                await operation.fail("client_cancelled")
+                raise
             except Exception:
+                await operation.fail("chat_failed")
                 logger.exception("Streaming chat failed")
                 await queue.put({
                     "type": "error",
@@ -789,7 +931,15 @@ async def stream_chat(
         task = asyncio.create_task(run_chat())
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
+                except TimeoutError:
+                    # Keep the NDJSON response active while a cold/offloaded LLM
+                    # is still waiting for its first visible token. External
+                    # Nginx otherwise closes an apparently idle stream and the
+                    # browser can only report a generic `network error`.
+                    yield json.dumps({"type": "heartbeat"}) + "\n"
+                    continue
                 if event is None:
                     break
                 yield json.dumps(event, ensure_ascii=False) + "\n"
@@ -814,15 +964,25 @@ async def regenerate_message(
     message_id: str, payload: RegenerateRequest, request: Request,
     user: CurrentUser = Depends(get_current_user),
 ):
-    if payload.model_key and payload.persona != "none":
-        raise HTTPException(status_code=422, detail="직접 선택 모델은 페르소나 없음에서만 사용할 수 있습니다.")
-    if payload.model_key:
-        try:
-            await request.app.state.model_manager.ensure_loaded(payload.model_key)
-        except ModelManagerConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ModelManagerError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    operation = await request.app.state.operation_state_manager.start_pipeline(
+        request, user.id, "llm", ("llm", "tts") if payload.speak else ("llm",),
+    )
+    if payload.model_key and payload.persona == "emotional_companion":
+        raise HTTPException(status_code=422, detail="정서적 동반자는 전용 모델을 사용합니다.")
+    try:
+        if payload.persona == "emotional_companion":
+            await request.app.state.model_manager.ensure_companion_model()
+            logger.info(
+                "Companion model activated for regeneration: user=%s model=%s",
+                user.id,
+                request.app.state.settings.llm_companion_model,
+            )
+        elif payload.model_key:
+            await request.app.state.model_manager.ensure_user_model(user.id, payload.model_key)
+    except ModelManagerConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ModelManagerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     db, pipeline = request.app.state.db, request.app.state.pipeline
     conversation = db.get_conversation(user.id, message_id)
     if conversation is None:
@@ -835,6 +995,8 @@ async def regenerate_message(
     session = db.get_session(user.id, conversation["session_id"])
     if session is None:
         raise HTTPException(status_code=404, detail="대화 세션을 찾을 수 없습니다.")
+    request_attachment_rows = list(db.list_attachments(user.id, session["id"]))
+    request_attachment_ids = [str(row["id"]) for row in request_attachment_rows]
     history_rows = db.get_history_before(user.id, session["id"], conversation["created_at"], limit=10)
     session_context = session_working_context(history_rows)
     agent_context = await request.app.state.agent_loop.gather_context(
@@ -847,7 +1009,7 @@ async def regenerate_message(
         memory_engine=request.app.state.memory_engine,
         document_engine=request.app.state.document_engine,
         web_search_engine=request.app.state.web_search_engine,
-        model_override=payload.model_key if payload.persona == "none" else None,
+        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
     )
     memories = agent_context.memories
     document_context = agent_context.document_context
@@ -860,7 +1022,7 @@ async def regenerate_message(
             web_context=web_context,
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
-            model_override=payload.model_key if payload.persona == "none" else None,
+            model_override=payload.model_key if payload.persona != "emotional_companion" else None,
             max_answer_chars=200 if payload.speak else None,
         )
     except PipelineUnavailable as exc:
@@ -868,17 +1030,24 @@ async def regenerate_message(
     character_cue = await pipeline.generate_character_cue(
         answer,
         persona=payload.persona,
-        model_override=payload.model_key if payload.persona == "none" else None,
+        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
     )
+    await operation.complete_stage()
     audio_url = (
         await pipeline.synthesize(answer, payload.voice_id, character_cue["voice_style"])
         if payload.speak else None
     )
+    if payload.speak:
+        operation.move_to("tts")
+        await operation.complete_stage()
     answer = append_web_sources(answer, agent_context.web_sources)
     try:
         updated = db.update_conversation_response(
             user.id, message_id, answer, audio_url,
             character_cue_json=serialize_character_cue(character_cue),
+            attachment_refs_json=merged_attachment_refs_json(
+                conversation, request_attachment_rows,
+            ),
             expected_auth_version=user.auth_version,
         )
     except AccountAccessFenceError as exc:
@@ -886,6 +1055,13 @@ async def regenerate_message(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=409, detail="재생성 중 대화가 변경되었습니다. 다시 시도해 주세요.")
+    try:
+        consume_request_attachments(
+            db, user.id, request_attachment_ids, user.auth_version,
+        )
+    except AccountAccessFenceError as exc:
+        require_write_fence(request, user)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     working_rows = db.get_history(user.id, session["id"], limit=10)
     db.upsert_session_working_memory(
         user.id, session["id"], session_working_context(working_rows), len(working_rows),
@@ -906,6 +1082,9 @@ async def synthesize_message_audio(
     message_id: str, payload: MessageAudioRequest, request: Request,
     user: CurrentUser = Depends(get_current_user),
 ):
+    operation = await request.app.state.operation_state_manager.start_pipeline(
+        request, user.id, "tts", ("tts",),
+    )
     db, pipeline = request.app.state.db, request.app.state.pipeline
     lock_key = f"{user.id}:{message_id}"
     audio_locks = request.app.state.message_audio_locks
@@ -925,16 +1104,18 @@ async def synthesize_message_audio(
         ):
             raise HTTPException(status_code=403, detail="이 계정에서 사용할 수 없는 개인화 음성입니다.")
         if conversation["output_audio_path"]:
+            await operation.complete_stage()
             return message_response(
                 conversation,
                 audio_url=pipeline.public_audio_url(conversation["output_audio_path"]),
             )
         assistant_text = str(conversation["assistant_text"] or "").strip()
-        if not assistant_text:
+        spoken_text = spoken_answer_text(assistant_text)
+        if not spoken_text:
             raise HTTPException(status_code=409, detail="답변 생성이 끝난 뒤 음성을 만들어 주세요.")
         character_cue = stored_character_cue(conversation)
         audio_url = await pipeline.synthesize(
-            assistant_text, payload.voice_id, character_cue["voice_style"],
+            spoken_text, payload.voice_id, character_cue["voice_style"],
         )
         if not audio_url:
             raise HTTPException(status_code=503, detail="음성을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.")
@@ -948,6 +1129,7 @@ async def synthesize_message_audio(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if updated is None:
             raise HTTPException(status_code=409, detail="답변이 변경되었습니다. 새 답변에서 다시 시도해 주세요.")
+        await operation.complete_stage()
         return message_response(
             updated, audio_url=pipeline.public_audio_url(updated["output_audio_path"]),
         )
@@ -957,8 +1139,11 @@ async def synthesize_message_audio(
 async def transcribe(
     request: Request,
     audio: UploadFile = File(...),
-    _user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ):
+    operation = await request.app.state.operation_state_manager.start_pipeline(
+        request, user.id, "stt", ("stt",),
+    )
     # 음성 입력 데이터 15메가 제한 로직 및 예외처리
     content = await audio.read(15 * 1024 * 1024 + 1)
     if not content:
@@ -972,7 +1157,9 @@ async def transcribe(
             audio.content_type or "audio/mp4",
         )
     except PipelineUnavailable as exc:
+        await operation.fail("stt_unavailable")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    await operation.complete_stage()
     return TranscriptResponse(text=text)
 
 
@@ -1110,8 +1297,20 @@ async def delete_voice(
 
 
 @router.get("/memories", response_model=list[MemoryResponse])
-def list_memories(request: Request, user: CurrentUser = Depends(get_current_user)):
-    return [memory_response(row) for row in request.app.state.db.list_memories(user.id)]
+def list_memories(
+    request: Request,
+    q: str | None = Query(default=None, max_length=100),
+    memory_type: Literal["preference", "profile", "fact", "schedule", "relationship"] | None = Query(default=None),
+    user: CurrentUser = Depends(get_current_user),
+):
+    return [
+        memory_response(row)
+        for row in request.app.state.db.list_memories(
+            user.id,
+            memory_type=memory_type,
+            query=q,
+        )
+    ]
 
 
 @router.post("/memories", response_model=MemoryResponse, status_code=201)
@@ -1141,7 +1340,8 @@ def delete_memory(memory_id: str, request: Request, user: CurrentUser = Depends(
 
 @router.get("/portrait", response_model=PortraitResponse)
 def get_portrait(request: Request, user: CurrentUser = Depends(get_current_user)):
-    return portrait_response(request.app.state.db.get_portrait(user.id))
+    counts = portrait_readiness(request.app.state.db, user.id)
+    return portrait_response(request.app.state.db.get_portrait(user.id), counts)
 
 
 @router.post("/portrait/generate", response_model=PortraitResponse, status_code=202)
@@ -1150,9 +1350,21 @@ async def generate_portrait(
     request: Request,
     user: CurrentUser = Depends(get_current_user),
 ):
+    analysis_persona = "default" if payload.persona == "none" else payload.persona
+    session_count, turn_count, character_count = portrait_readiness(
+        request.app.state.db, user.id,
+    )
+    readiness_error = PortraitEngine.readiness_error(
+        (session_count, turn_count, character_count),
+    )
+    if readiness_error:
+        raise HTTPException(
+            status_code=409,
+            detail=readiness_error,
+        )
     try:
         row, _started = request.app.state.db.begin_portrait_generation(
-            user.id, payload.persona, expected_auth_version=user.auth_version,
+            user.id, analysis_persona, expected_auth_version=user.auth_version,
         )
     except AccountAccessFenceError as exc:
         require_write_fence(request, user)
@@ -1168,4 +1380,4 @@ async def generate_portrait(
     await dispatch_portrait_task(
         request.app, user.id, row["generation_id"], row["persona"], operation,
     )
-    return portrait_response(row)
+    return portrait_response(row, (session_count, turn_count, character_count))

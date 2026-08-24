@@ -465,6 +465,7 @@ class PostgresDatabase(Database):
         input_audio_path: str | None = None,
         output_audio_path: str | None = None,
         character_cue_json: str | None = None,
+        attachment_refs_json: str = "[]",
         expected_auth_version: int | None = None,
     ):
         conversation_id = str(uuid.uuid4())
@@ -475,11 +476,12 @@ class PostgresDatabase(Database):
             db.execute(
                 "INSERT INTO conversations ("
                 "id, session_id, user_id, user_text, assistant_text, "
-                "input_audio_path, output_audio_path, created_at, character_cue_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "input_audio_path, output_audio_path, created_at, character_cue_json, attachment_refs_json"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conversation_id, session_id, user_id, user_text, assistant_text,
                     input_audio_path, output_audio_path, now, character_cue_json,
+                    attachment_refs_json,
                 ),
             )
             db.execute(

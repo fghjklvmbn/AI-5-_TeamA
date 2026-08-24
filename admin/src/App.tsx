@@ -19,12 +19,13 @@ import {
   LoaderCircle,
   LogOut,
   Menu,
+  Monitor,
   Moon,
-  Network,
   RefreshCcw,
   Search,
   ServerCog,
   ShieldCheck,
+  SquareTerminal,
   Sun,
   Trash2,
   UserRoundCheck,
@@ -33,7 +34,7 @@ import {
   Zap,
   type LucideIcon,
 } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { adminApi, ApiError, sessionStore } from './api';
 import type {
@@ -46,10 +47,14 @@ import type {
   UserMetric,
   HardwareMetric,
   HardwareMonitorResponse,
+  LlmLogEvent,
+  LlmLogLevel,
+  LlmLogSource,
 } from './types';
 
 type Page = 'overview' | 'services' | 'transactions' | 'operations' | 'users';
 type RangeKey = '1h' | '24h' | '7d' | '30d';
+type ThemePreference = 'system' | 'light' | 'dark';
 
 const EMPTY_OVERVIEW: Overview = {
   transaction_count: 0,
@@ -160,7 +165,15 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`status-badge ${statusTone(status)}`}><i />{STATUS_LABELS[status] || status}</span>;
 }
 
-function LoginView({ onLogin }: { onLogin: (token: string, user: AdminUser) => void }) {
+function LoginView({
+  themePreference,
+  onThemeChange,
+  onLogin,
+}: {
+  themePreference: ThemePreference;
+  onThemeChange: (theme: ThemePreference) => void;
+  onLogin: (token: string, user: AdminUser) => void;
+}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -191,14 +204,24 @@ function LoginView({ onLogin }: { onLogin: (token: string, user: AdminUser) => v
         <p className="eyebrow">MEMORYPAL OPERATIONS</p>
         <h1>서비스의 모든 흐름을<br /><em>조용하고 선명하게.</em></h1>
         <p className="story-copy">요청부터 백그라운드 작업까지, 상태 변화와 성능을 한곳에서 확인하세요. 대화 본문과 인증 정보는 수집하거나 표시하지 않습니다.</p>
-        <div className="trust-row">
-          <span><ShieldCheck size={17} /> 민감 정보 비노출</span>
-          <span><Network size={17} /> 상태 전이 추적</span>
-        </div>
       </section>
       <section className="login-panel">
         <form className="login-card" onSubmit={submit}>
           <div className="mobile-brand"><div className="brand-mark small"><span>M</span></div><strong>MemoryPal</strong></div>
+          <div className="login-theme-setting">
+            <span>화면 테마</span>
+            <div className="theme-switch" role="group" aria-label="관리자 화면 테마">
+              <button type="button" aria-pressed={themePreference === 'system'} className={themePreference === 'system' ? 'active' : ''} onClick={() => onThemeChange('system')}>
+                <Monitor size={15} />자동
+              </button>
+              <button type="button" aria-pressed={themePreference === 'light'} className={themePreference === 'light' ? 'active' : ''} onClick={() => onThemeChange('light')}>
+                <Sun size={15} />기본
+              </button>
+              <button type="button" aria-pressed={themePreference === 'dark'} className={themePreference === 'dark' ? 'active' : ''} onClick={() => onThemeChange('dark')}>
+                <Moon size={15} />다크
+              </button>
+            </div>
+          </div>
           <div className="login-title">
             <p className="eyebrow">ADMIN CONSOLE</p>
             <h2>관리자 로그인</h2>
@@ -219,7 +242,6 @@ function LoginView({ onLogin }: { onLogin: (token: string, user: AdminUser) => v
           <button className="primary-button login-button" disabled={submitting}>
             {submitting ? <><LoaderCircle className="spin" size={18} />권한 확인 중</> : <>운영 콘솔 열기<ChevronRight size={18} /></>}
           </button>
-          <p className="login-footnote"><Fingerprint size={15} /> 세션은 이 브라우저 탭을 닫으면 안전하게 종료됩니다.</p>
         </form>
       </section>
     </main>
@@ -258,7 +280,6 @@ function Sidebar({ page, onPage, user, onLogout, open, onClose, health }: {
         </nav>
         <div className="sidebar-status">
           <div className={`live-dot ${health}`}><i /> {health === 'syncing' ? '메타데이터 동기화 중' : health === 'delayed' ? '연결 상태 확인 필요' : '운영 메타데이터 최신'}</div>
-          <p>{health === 'delayed' ? '마지막 요청에 실패했습니다. 상단에서 다시 시도해 주세요.' : '본문 없이 15초 간격으로 상태를 갱신합니다.'}</p>
         </div>
         <div className="admin-profile">
           <div className="avatar">{(user.display_name || user.email || 'A').slice(0, 1).toUpperCase()}</div>
@@ -408,18 +429,62 @@ function TransactionsPage({ result, loading, onCorrelation }: { result: ListResu
   );
 }
 
+type OperationView = 'all' | 'pipelines';
+
+function pipelineStages(operation: OperationState) {
+  return (operation.resource_id || 'LLM').split(' -> ').filter(Boolean);
+}
+
+function PipelineStageFlow({ operation }: { operation: OperationState }) {
+  const stages = pipelineStages(operation);
+  const completed = Math.min(stages.length, Math.round(operation.progress_percent * stages.length / 100));
+  return (
+    <div className="pipeline-stage-flow" aria-label={`파이프라인 ${completed}/${stages.length}단계`}>
+      {stages.map((stage, index) => {
+        const state = index < completed ? 'done' : index === completed && operation.status === 'running' ? 'active' : 'pending';
+        const label = stage === 'LLM' ? 'LLM · RAG' : stage;
+        return <Fragment key={`${operation.id}-${stage}`}><span className={state}><i />{label}</span>{index < stages.length - 1 && <b>→</b>}</Fragment>;
+      })}
+    </div>
+  );
+}
+
 function OperationsPage({ result, loading, onCorrelation }: { result: ListResult<OperationState>; loading: boolean; onCorrelation: (id: string) => void }) {
+  const [view, setView] = useState<OperationView>('all');
+  const pipelineOperations = result.items.filter((operation) => operation.operation_type === 'ai_pipeline');
+  const visibleCount = view === 'pipelines' ? pipelineOperations.length : result.total;
   return (
     <article className="panel data-panel">
-      <header className="panel-heading table-heading"><div><p className="section-kicker">OPERATION STATES</p><h3>작업 상태</h3><p>작업 단위의 현재 상태와 단조 증가하는 진행률입니다.</p></div><span className="record-count">{formatNumber(result.total)}건</span></header>
-      {loading ? <LoadingRows /> : result.items.length ? (
+      <header className="panel-heading table-heading operations-heading"><div><p className="section-kicker">OPERATION STATES</p><h3>작업 상태</h3><p>작업 단위의 현재 상태와 단조 증가하는 진행률입니다.</p></div><span className="record-count">{formatNumber(visibleCount)}건</span></header>
+      <nav className="operation-view-tabs" aria-label="작업 상태 표시 방식">
+        <button className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}>전체 작업</button>
+        <button className={view === 'pipelines' ? 'active' : ''} onClick={() => setView('pipelines')}>파이프라인 요청별 <span>{pipelineOperations.length}</span></button>
+      </nav>
+      {loading ? <LoadingRows /> : view === 'pipelines' ? pipelineOperations.length ? (
+        <div className="table-scroll"><table className="pipeline-table">
+          <thead><tr><th>최근 변경</th><th>요청 파이프라인</th><th>단계 진행</th><th>전체 진행률</th><th>상태</th><th>사용자</th><th>Correlation</th></tr></thead>
+          <tbody>{pipelineOperations.map((operation) => {
+            const stages = pipelineStages(operation);
+            const completed = Math.min(stages.length, Math.round(operation.progress_percent * stages.length / 100));
+            return <tr key={operation.id}>
+              <td className="nowrap"><span className="muted-cell">{formatDate(operation.updated_at)}</span></td>
+              <td><div className="operation-name"><strong>AI 생성 요청</strong><code>{compactId(operation.id, 12)}</code></div></td>
+              <td><PipelineStageFlow operation={operation} /></td>
+              <td><div className="pipeline-fraction"><strong>{completed}/{stages.length}</strong><span>{operation.progress_percent}%</span></div></td>
+              <td><StatusBadge status={operation.status} /></td>
+              <td><code className="muted-code">{compactId(operation.user_id)}</code></td>
+              <td><button className="link-button" onClick={() => onCorrelation(operation.correlation_id)}>{compactId(operation.correlation_id, 10)}<ChevronRight size={14} /></button></td>
+            </tr>;
+          })}</tbody>
+        </table></div>
+      ) : <EmptyState title="기록된 AI 파이프라인 요청이 없습니다" /> : result.items.length ? (
         <div className="table-scroll"><table className="operation-table">
           <thead><tr><th>최근 변경</th><th>작업</th><th>상태</th><th>진행률</th><th>사용자</th><th>오류 코드</th><th>Correlation</th></tr></thead>
           <tbody>{result.items.map((operation) => <tr key={operation.id}>
             <td className="nowrap"><span className="muted-cell">{formatDate(operation.updated_at)}</span></td>
-            <td><div className="operation-name"><strong>{operation.operation_type}</strong><code>{compactId(operation.id, 7)}</code></div></td>
+            <td><div className="operation-name"><strong>{operation.operation_type === 'ai_pipeline' ? 'AI 파이프라인' : operation.operation_type}</strong><code>{operation.operation_type === 'ai_pipeline' && operation.resource_id ? operation.resource_id : compactId(operation.id, 7)}</code></div></td>
             <td><StatusBadge status={operation.status} /></td>
-            <td><div className="progress-cell"><div><i style={{ width: `${Math.min(100, Math.max(0, operation.progress_percent || 0))}%` }} /></div><strong>{operation.progress_percent || 0}%</strong></div></td>
+            <td><div className="progress-cell"><div><i style={{ width: `${Math.min(100, Math.max(0, operation.progress_percent || 0))}%` }} /></div><strong>{operation.progress_percent || 0}%{operation.operation_type === 'ai_pipeline' && operation.resource_id ? ` · ${Math.min(operation.resource_id.split(' -> ').length, Math.round(operation.progress_percent * operation.resource_id.split(' -> ').length / 100))}/${operation.resource_id.split(' -> ').length}` : ''}</strong></div></td>
             <td><code className="muted-code">{compactId(operation.user_id)}</code></td>
             <td><span className={operation.error_code ? 'error-code' : 'muted-cell'}>{operation.error_code || '—'}</span></td>
             <td><button className="link-button" onClick={() => onCorrelation(operation.correlation_id)}>{compactId(operation.correlation_id, 10)}<ChevronRight size={14} /></button></td>
@@ -651,6 +716,42 @@ function UsersPage({ result, loading, token, search, pageNumber, canGoPrevious, 
   );
 }
 
+function samePayload(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function reconcileSnapshot<T extends Record<string, unknown>>(
+  current: T,
+  incoming: T,
+  ignoredKeys: Array<keyof T> = [],
+): T {
+  const currentComparable = { ...current };
+  const incomingComparable = { ...incoming };
+  ignoredKeys.forEach((key) => {
+    delete currentComparable[key];
+    delete incomingComparable[key];
+  });
+  return samePayload(currentComparable, incomingComparable) ? current : incoming;
+}
+
+function reconcileListResult<T>(
+  current: ListResult<T>,
+  incoming: ListResult<T>,
+  identity: (item: T) => string,
+): ListResult<T> {
+  const currentById = new Map(current.items.map((item) => [identity(item), item]));
+  const items = incoming.items.map((item) => {
+    const previous = currentById.get(identity(item));
+    return previous && samePayload(previous, item) ? previous : item;
+  });
+  const sameItems = items.length === current.items.length
+    && items.every((item, index) => item === current.items[index]);
+  const sameMetadata = current.total === incoming.total
+    && (current.next_cursor ?? null) === (incoming.next_cursor ?? null);
+  if (sameItems && sameMetadata) return current;
+  return { ...incoming, items };
+}
+
 const SERVICE_LABELS: Record<HardwareMetric['service'], string> = {
   stt: 'STT', llm: 'LLM', tts: 'TTS', gateway: 'Gateway', archive: 'Archive',
 };
@@ -659,7 +760,161 @@ const EMPTY_HARDWARE: HardwareMonitorResponse = {
   generated_at: '', interval_seconds: 15, services: [], history: [],
 };
 
-function ServicesPage({ data, loading }: { data: HardwareMonitorResponse; loading: boolean }) {
+const LOG_SOURCE_LABELS: Record<LlmLogSource, string> = {
+  server: '서버', runtime: '런타임', model: '모델 생성',
+};
+
+const LOG_EVENT_LABELS: Record<string, string> = {
+  model_load_requested: '로드 요청',
+  model_load_progress: '로드 중',
+  model_loaded: '로드 완료',
+  model_load_failed: '로드 실패',
+  model_unload_requested: '언로드 요청',
+  model_unloaded: '언로드 완료',
+  model_unload_failed: '언로드 실패',
+  inference_progress: '생성 중',
+  inference_completed: '생성 완료',
+  inference_failed: '생성 실패',
+  runtime_event: '런타임',
+  server_error: '서버 오류',
+  server_event: '서버',
+};
+
+function logStats(stats: Record<string, unknown>) {
+  const labels: Record<string, string> = {
+    tokens_per_second: '생성 속도', predicted_tokens_per_second: '생성 속도',
+    prompt_tokens_per_second: '입력 처리 속도', prompt_tokens: '입력 토큰',
+    completion_tokens: '생성 토큰', total_tokens: '전체 토큰',
+    duration_ms: '처리 시간', context_length: '컨텍스트', parallel_slots: '병렬 슬롯',
+    time_to_first_token: '첫 토큰', ttft: '첫 토큰',
+  };
+  return Object.entries(stats).slice(0, 5).map(([key, value]) => {
+    const label = labels[key] || key.replaceAll('_', ' ');
+    if (typeof value === 'object') return `${label} —`;
+    const suffix = key.includes('tokens_per_second') ? ' tok/s' : key.endsWith('_ms') ? ' ms' : '';
+    return `${label} ${String(value)}${suffix}`;
+  }).join(' · ');
+}
+
+function LlmServerLogs({ token, onUnauthorized }: { token: string; onUnauthorized: () => void }) {
+  const [items, setItems] = useState<LlmLogEvent[]>([]);
+  const [source, setSource] = useState<LlmLogSource | ''>('');
+  const [level, setLevel] = useState<LlmLogLevel | ''>('');
+  const [view, setView] = useState<'important' | 'all'>('important');
+  const [modelSearch, setModelSearch] = useState('');
+  const [appliedModelSearch, setAppliedModelSearch] = useState('');
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [live, setLive] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const cursor = useRef(0);
+  const manualRefresh = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAppliedModelSearch(modelSearch.trim()), 350);
+    return () => window.clearTimeout(timer);
+  }, [modelSearch]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let disposed = false;
+    let busy = false;
+    cursor.current = 0;
+    setItems([]);
+    setLoading(true);
+    setError('');
+
+    const refresh = async () => {
+      if (busy || disposed || document.visibilityState !== 'visible') return;
+      busy = true;
+      try {
+        const result = await adminApi.llmLogs(token, {
+          afterCursor: cursor.current,
+          limit: 200,
+          source,
+          level,
+          modelKey: appliedModelSearch,
+        }, controller.signal);
+        if (disposed) return;
+        setAvailable(result.available && result.enabled);
+        setError('');
+        if (result.latest_cursor < cursor.current) {
+          setItems(result.items.slice(-1000));
+        } else if (result.items.length) {
+          setItems((current) => {
+            const byCursor = new Map(current.map((item) => [item.cursor, item]));
+            result.items.forEach((item) => byCursor.set(item.cursor, item));
+            return [...byCursor.values()].sort((a, b) => a.cursor - b.cursor).slice(-1000);
+          });
+        }
+        cursor.current = result.items.length >= 200 ? result.next_cursor : result.latest_cursor;
+      } catch (reason) {
+        if (reason instanceof DOMException && reason.name === 'AbortError') return;
+        if (reason instanceof ApiError && reason.status === 401) { onUnauthorized(); return; }
+        setError(reason instanceof Error ? reason.message : 'LLM 서버 로그를 불러오지 못했습니다.');
+      } finally {
+        if (!disposed) setLoading(false);
+        busy = false;
+      }
+    };
+    manualRefresh.current = () => void refresh();
+    void refresh();
+    const timer = live ? window.setInterval(() => void refresh(), 3_000) : undefined;
+    return () => {
+      disposed = true;
+      manualRefresh.current = null;
+      controller.abort();
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [token, source, level, appliedModelSearch, live, onUnauthorized]);
+
+  const visibleItems = useMemo(() => view === 'all'
+    ? items
+    : items.filter((item) => item.importance === 'critical' || item.importance === 'important'), [items, view]);
+  const latestLoadedModel = useMemo(() => [...items].reverse().find((item) => item.event_type === 'model_loaded')?.model_key || '없음', [items]);
+  const completedCount = useMemo(() => items.filter((item) => item.event_type === 'inference_completed').length, [items]);
+  const issueCount = useMemo(() => items.filter((item) => item.importance === 'critical' || item.level === 'warn' || item.level === 'error' || item.level === 'fatal').length, [items]);
+
+  return <section className="panel llm-log-panel">
+    <div className="panel-heading llm-log-heading">
+      <div><p className="section-kicker">LM STUDIO EVENT STREAM</p><h3>LLM 서버 로그</h3><p>모델 로드·런타임·생성 이벤트를 원문 대화 없이 표시합니다.</p></div>
+      <div className="llm-log-actions">
+        <span className={`llm-log-live ${available === false ? 'offline' : live ? 'active' : ''}`}><i />{available === false ? '연결 안 됨' : live ? '실시간' : '일시정지'}</span>
+        <button onClick={() => setLive((value) => !value)}>{live ? '일시정지' : '계속 보기'}</button>
+        <button onClick={() => manualRefresh.current?.()} disabled={loading} aria-label="LLM 로그 새로고침"><RefreshCcw className={loading ? 'spin' : ''} size={14} /></button>
+      </div>
+    </div>
+    <div className="llm-log-summary">
+      <div><span>최근 로드 모델</span><strong title={latestLoadedModel}>{latestLoadedModel}</strong></div>
+      <div><span>응답 생성 완료</span><strong>{completedCount}건</strong></div>
+      <div className={issueCount ? 'has-issue' : ''}><span>경고·오류</span><strong>{issueCount}건</strong></div>
+    </div>
+    <div className="llm-log-filters">
+      <label><span>표시</span><select value={view} onChange={(event) => setView(event.target.value as 'important' | 'all')}><option value="important">주요 로그</option><option value="all">전체 로그</option></select></label>
+      <label><span>소스</span><select value={source} onChange={(event) => setSource(event.target.value as LlmLogSource | '')}><option value="">전체</option>{Object.entries(LOG_SOURCE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+      <label><span>레벨</span><select value={level} onChange={(event) => setLevel(event.target.value as LlmLogLevel | '')}><option value="">전체</option><option value="info">정보</option><option value="warn">경고</option><option value="error">오류</option><option value="fatal">치명적 오류</option></select></label>
+      <label className="llm-log-search"><span>모델</span><div><Search size={14} /><input value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} placeholder="모델 이름 검색" />{modelSearch && <button onClick={() => setModelSearch('')} aria-label="모델 검색어 지우기"><X size={13} /></button>}</div></label>
+      <span className="record-count">표시 {visibleItems.length}건 · 전체 {items.length}건</span>
+    </div>
+    {error ? <div className="llm-log-notice error"><CircleAlert size={16} />{error}</div>
+      : available === false ? <div className="llm-log-notice"><SquareTerminal size={18} /><div><strong>LLM 로그 수집기에 연결할 수 없습니다.</strong><span>192.168.2.41에 최신 MemoryPal LLM Monitor 패키지를 실행해 주세요.</span></div></div>
+      : loading && !items.length ? <LoadingRows />
+      : visibleItems.length ? <div className="llm-log-scroll"><table className="llm-log-table"><thead><tr><th>시각</th><th>레벨</th><th>소스</th><th>이벤트</th><th>모델</th><th>내용·통계</th></tr></thead><tbody>
+        {[...visibleItems].reverse().map((event) => <tr key={event.cursor} className={`log-importance-${event.importance}`}>
+          <td className="nowrap">{formatDate(event.occurred_at)}</td>
+          <td><span className={`log-level ${event.level}`}>{event.level}</span></td>
+          <td>{LOG_SOURCE_LABELS[event.source]}</td>
+          <td><strong>{event.title || LOG_EVENT_LABELS[event.event_type] || event.event_type}</strong></td>
+          <td><code title={event.model_key || ''}>{event.model_key || '—'}</code></td>
+          <td><div className="log-message"><span>{event.message || '—'}</span>{logStats(event.stats) && <small>{logStats(event.stats)}</small>}{event.detail && event.detail !== event.message && <details><summary>기술 상세</summary><pre>{event.detail}</pre></details>}</div></td>
+        </tr>)}
+      </tbody></table></div>
+      : items.length ? <EmptyState title="현재 확인할 주요 이벤트가 없습니다" description="반복 상태 확인 등 일반 기록은 '전체 로그'에서 볼 수 있습니다." />
+        : <EmptyState title="수집된 LLM 서버 로그가 없습니다" description="모델을 로드하거나 대화를 시작하면 새 이벤트가 여기에 표시됩니다." />}
+  </section>;
+}
+
+function ServicesPage({ data, loading, token, onUnauthorized }: { data: HardwareMonitorResponse; loading: boolean; token: string; onUnauthorized: () => void }) {
   if (loading && !data.services.length) return <LoadingRows />;
   return <div className="services-page">
     <div className="service-grid">
@@ -682,6 +937,7 @@ function ServicesPage({ data, loading }: { data: HardwareMonitorResponse; loadin
         </div>}
       </article>)}
     </div>
+    <LlmServerLogs token={token} onUnauthorized={onUnauthorized} />
     <section className="panel service-history">
       <div className="panel-heading"><div><p className="section-kicker">15 SECOND SNAPSHOTS</p><h3>최근 상태 기록</h3></div><span className="record-count">{data.history.length}개</span></div>
       <div className="table-scroll"><table><thead><tr><th>시각</th><th>서비스</th><th>상태</th><th>CPU</th><th>RAM</th><th>응답</th></tr></thead><tbody>
@@ -739,17 +995,29 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [mobileNav, setMobileNav] = useState(false);
-  const [dark, setDark] = useState(() => localStorage.getItem('memorypal.admin.theme') !== 'light');
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
+    const stored = localStorage.getItem('memorypal.admin.theme');
+    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system';
+  });
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
+  const dark = themePreference === 'system' ? systemDark : themePreference === 'dark';
   const [correlationId, setCorrelationId] = useState('');
   const [correlation, setCorrelation] = useState<CorrelationDetail | null>(null);
   const [correlationLoading, setCorrelationLoading] = useState(false);
   const latestRequest = useRef(0);
+  const loadedPages = useRef(new Set<Page>());
 
   const period = useMemo(() => periodFor(range, now), [range, now]);
   const requestSearch = page === 'users' ? '' : appliedSearch;
 
   const unauthorized = useCallback(() => {
     sessionStore.clear();
+    loadedPages.current.clear();
+    setOverview(EMPTY_OVERVIEW);
+    setTransactions({ items: [], total: 0 });
+    setOperations({ items: [], total: 0 });
+    setUsers({ items: [], total: 0 });
+    setHardware(EMPTY_HARDWARE);
     setToken(null);
     setUser(null);
     setBooting(false);
@@ -766,9 +1034,18 @@ function App() {
   }, [token, unauthorized]);
 
   useEffect(() => {
+    const query = window.matchMedia?.('(prefers-color-scheme: dark)');
+    if (!query) return;
+    const update = (event: MediaQueryListEvent) => setSystemDark(event.matches);
+    setSystemDark(query.matches);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    localStorage.setItem('memorypal.admin.theme', dark ? 'dark' : 'light');
-  }, [dark]);
+    localStorage.setItem('memorypal.admin.theme', themePreference);
+  }, [dark, themePreference]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setAppliedSearch(search.trim()), 350);
@@ -793,24 +1070,42 @@ function App() {
     if (!token || !user) return;
     const controller = new AbortController();
     const requestId = ++latestRequest.current;
-    setLoading(true);
+    setLoading(!loadedPages.current.has(page));
     setRefreshing(true);
     setError('');
     const requestStatus = normalizeStatus(page, status);
     const filters = { from: period.from, to: period.to, status: requestStatus, search: requestSearch || undefined, limit: 200 };
-    const pageRequest = page === 'services'
-      ? adminApi.services(token, 100, controller.signal).then(setHardware)
+    const pageRequest = page === 'overview'
+      ? adminApi.overview(token, period.from, period.to, controller.signal).then((incoming) => {
+        setOverview((current) => reconcileSnapshot(current, incoming, ['generated_at']));
+      })
+      : page === 'services'
+      ? adminApi.services(token, 100, controller.signal).then((incoming) => {
+        setHardware((current) => reconcileSnapshot(current, incoming, ['generated_at']));
+      })
       : page === 'transactions'
-        ? adminApi.transactions(token, filters, controller.signal).then(setTransactions)
+        ? adminApi.transactions(token, filters, controller.signal).then((incoming) => {
+          setTransactions((current) => reconcileListResult(
+            current, incoming, (item) => item.event_id,
+          ));
+        })
       : page === 'operations'
-        ? adminApi.operations(token, filters, controller.signal).then(setOperations)
+        ? adminApi.operations(token, filters, controller.signal).then((incoming) => {
+          setOperations((current) => reconcileListResult(
+            current, incoming, (item) => item.id,
+          ));
+        })
         : page === 'users'
-          ? adminApi.users(token, period.from, period.to, requestStatus, userCursor, controller.signal).then(setUsers)
+          ? adminApi.users(token, period.from, period.to, requestStatus, userCursor, controller.signal).then((incoming) => {
+            setUsers((current) => reconcileListResult(
+              current, incoming, (item) => item.user_id,
+            ));
+          })
           : Promise.resolve();
-    const overviewRequest = page === 'services'
-      ? Promise.resolve()
-      : adminApi.overview(token, period.from, period.to, controller.signal).then(setOverview);
-    Promise.all([overviewRequest, pageRequest])
+    pageRequest
+      .then(() => {
+        if (!controller.signal.aborted) loadedPages.current.add(page);
+      })
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
         if (reason instanceof ApiError && reason.status === 401) { unauthorized(); return; }
@@ -879,7 +1174,7 @@ function App() {
   }
 
   if (booting) return <div className="boot-screen"><div className="brand-mark"><span>M</span></div><LoaderCircle className="spin" size={22} /><span>관리자 권한 확인 중</span></div>;
-  if (!token || !user) return <LoginView onLogin={(nextToken, nextUser) => { setToken(nextToken); setUser(nextUser); }} />;
+  if (!token || !user) return <LoginView themePreference={themePreference} onThemeChange={setThemePreference} onLogin={(nextToken, nextUser) => { setToken(nextToken); setUser(nextUser); }} />;
 
   const meta = PAGE_META[page];
   return (
@@ -891,7 +1186,7 @@ function App() {
           <div className="page-title"><p className="eyebrow">{meta.eyebrow}</p><h1>{meta.title}</h1></div>
           <div className="top-actions">
             <div className="last-updated"><i className={refreshing ? 'pulse' : ''} /><span>{refreshing ? '동기화 중' : `${formatDate((page === 'services' ? hardware.generated_at : overview.generated_at) || new Date(now).toISOString(), false)} 갱신`}</span></div>
-            <button className="icon-button" onClick={() => setDark((value) => !value)} aria-label={dark ? '밝은 화면' : '어두운 화면'}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
+            <button className="icon-button" onClick={() => setThemePreference(dark ? 'light' : 'dark')} aria-label={dark ? '밝은 화면' : '어두운 화면'}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
             <button className="icon-button" onClick={refresh} disabled={refreshing} aria-label="새로고침"><RefreshCcw className={refreshing ? 'spin' : ''} size={18} /></button>
           </div>
         </header>
@@ -908,12 +1203,12 @@ function App() {
 
         <div className="page-body">
           {page === 'overview' && <OverviewPage overview={overview} />}
-          {page === 'services' && <ServicesPage data={hardware} loading={loading} />}
+          {page === 'services' && <ServicesPage data={hardware} loading={loading} token={token} onUnauthorized={unauthorized} />}
           {page === 'transactions' && <TransactionsPage result={transactions} loading={loading} onCorrelation={setCorrelationId} />}
           {page === 'operations' && <OperationsPage result={operations} loading={loading} onCorrelation={setCorrelationId} />}
           {page === 'users' && <UsersPage result={users} loading={loading} token={token} search={appliedSearch} pageNumber={userCursorHistory.length + 1} canGoPrevious={userCursorHistory.length > 0} canGoNext={Boolean(users.next_cursor)} onPrevious={previousUserPage} onNext={nextUserPage} onChanged={refresh} onUnauthorized={unauthorized} />}
         </div>
-        <footer className="content-footer"><span>MemoryPal Operations Console</span><span><ShieldCheck size={14} /> 개인정보 최소 수집 원칙 적용</span></footer>
+        <footer className="content-footer"><span>MemoryPal Operations Console</span></footer>
       </main>
       {correlationId && <CorrelationDrawer id={correlationId} detail={correlation} loading={correlationLoading} onClose={() => setCorrelationId('')} />}
     </div>

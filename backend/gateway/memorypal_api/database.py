@@ -159,6 +159,7 @@ class Database:
                     input_audio_path TEXT,
                     output_audio_path TEXT,
                     character_cue_json TEXT,
+                    attachment_refs_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS memories (
@@ -214,7 +215,9 @@ class Database:
                     content_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     text_content TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    file_content BLOB,
+                    created_at TEXT NOT NULL,
+                    consumed_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS session_working_memory (
                     session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -429,6 +432,15 @@ class Database:
             }
             if "character_cue_json" not in conversation_columns:
                 db.execute("ALTER TABLE conversations ADD COLUMN character_cue_json TEXT")
+            if "attachment_refs_json" not in conversation_columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN attachment_refs_json TEXT NOT NULL DEFAULT '[]'")
+            attachment_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(attachments)").fetchall()
+            }
+            if "consumed_at" not in attachment_columns:
+                db.execute("ALTER TABLE attachments ADD COLUMN consumed_at TEXT")
+            if "file_content" not in attachment_columns:
+                db.execute("ALTER TABLE attachments ADD COLUMN file_content BLOB")
             user_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()
             }
@@ -1100,16 +1112,19 @@ class Database:
     def create_attachment(
         self, user_id: str, session_id: str, filename: str, content_type: str,
         size_bytes: int, text_content: str, expected_auth_version: int | None = None,
+        file_content: bytes | None = None,
     ) -> sqlite3.Row:
         attachment_id = str(uuid.uuid4())
         with self.transaction() as db:
             if expected_auth_version is not None:
                 self._require_account_fence(db, user_id, expected_auth_version)
             db.execute(
-                "INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO attachments ("
+                "id, user_id, session_id, filename, content_type, size_bytes, text_content, file_content, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     attachment_id, user_id, session_id, filename, content_type,
-                    size_bytes, text_content, utc_now(),
+                    size_bytes, text_content, file_content, utc_now(),
                 ),
             )
             return db.execute(
@@ -1126,9 +1141,33 @@ class Database:
     # 첨부파일 조회
     def list_attachments(self, user_id: str, session_id: str) -> list[sqlite3.Row]:
         return self.fetch_all(
+            "SELECT * FROM attachments WHERE user_id = ? AND session_id = ? "
+            "AND consumed_at IS NULL ORDER BY created_at ASC",
+            (user_id, session_id),
+        )
+
+    def list_all_attachments(self, user_id: str, session_id: str) -> list[sqlite3.Row]:
+        return self.fetch_all(
             "SELECT * FROM attachments WHERE user_id = ? AND session_id = ? ORDER BY created_at ASC",
             (user_id, session_id),
         )
+
+    def consume_attachments(
+        self, user_id: str, attachment_ids: list[str],
+        expected_auth_version: int | None = None,
+    ) -> int:
+        unique_ids = list(dict.fromkeys(attachment_ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" for _ in unique_ids)
+        with self.transaction() as db:
+            if expected_auth_version is not None:
+                self._require_account_fence(db, user_id, expected_auth_version)
+            return db.execute(
+                f"UPDATE attachments SET consumed_at = ? WHERE user_id = ? "
+                f"AND consumed_at IS NULL AND id IN ({placeholders})",
+                (utc_now(), user_id, *unique_ids),
+            ).rowcount
 
     # 첨부파일 삭제
     def delete_attachment(
@@ -1152,6 +1191,7 @@ class Database:
         input_audio_path: str | None = None,
         output_audio_path: str | None = None,
         character_cue_json: str | None = None,
+        attachment_refs_json: str = "[]",
         expected_auth_version: int | None = None,
     ) -> sqlite3.Row:
         conversation_id = str(uuid.uuid4())
@@ -1163,8 +1203,8 @@ class Database:
             db.execute(
                 "INSERT INTO conversations ("
                 "id, session_id, user_id, user_text, assistant_text, input_audio_path, "
-                "output_audio_path, character_cue_json, created_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "output_audio_path, character_cue_json, attachment_refs_json, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conversation_id,
                     session_id,
@@ -1174,6 +1214,7 @@ class Database:
                     input_audio_path,
                     output_audio_path,
                     character_cue_json,
+                    attachment_refs_json,
                     now,
                 ),
             )
@@ -1247,15 +1288,20 @@ class Database:
         self, user_id: str, conversation_id: str, assistant_text: str,
         output_audio_path: str | None,
         character_cue_json: str | None = None,
+        attachment_refs_json: str | None = None,
         expected_auth_version: int | None = None,
     ) -> sqlite3.Row | None:
         with self.transaction() as db:
             if expected_auth_version is not None:
                 self._require_account_fence(db, user_id, expected_auth_version)
             updated = db.execute(
-                "UPDATE conversations SET assistant_text = ?, output_audio_path = ?, character_cue_json = ? "
+                "UPDATE conversations SET assistant_text = ?, output_audio_path = ?, character_cue_json = ?, "
+                "attachment_refs_json = COALESCE(?, attachment_refs_json) "
                 "WHERE id = ? AND user_id = ?",
-                (assistant_text, output_audio_path, character_cue_json, conversation_id, user_id),
+                (
+                    assistant_text, output_audio_path, character_cue_json,
+                    attachment_refs_json, conversation_id, user_id,
+                ),
             ).rowcount
             if not updated:
                 return None
@@ -1470,10 +1516,31 @@ class Database:
             ).fetchone()
 
     # 메모리(기억)을 로드하고 리스트
-    def list_memories(self, user_id: str, limit: int = 200) -> list[sqlite3.Row]:
+    def list_memories(
+        self,
+        user_id: str,
+        limit: int = 200,
+        *,
+        memory_type: str | None = None,
+        query: str | None = None,
+    ) -> list[sqlite3.Row]:
+        clauses = ["user_id = ?"]
+        parameters: list[object] = [user_id]
+        if memory_type:
+            clauses.append("memory_type = ?")
+            parameters.append(memory_type)
+        normalized_query = str(query or "").strip().lower()
+        if normalized_query:
+            escaped_query = (
+                normalized_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            clauses.append("LOWER(content) LIKE ? ESCAPE '\\'")
+            parameters.append(f"%{escaped_query}%")
+        parameters.append(limit)
         return self.fetch_all(
-            "SELECT * FROM memories WHERE user_id = ? ORDER BY importance DESC, updated_at DESC LIMIT ?",
-            (user_id, limit),
+            "SELECT * FROM memories WHERE " + " AND ".join(clauses)
+            + " ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            tuple(parameters),
         )
 
     # 메모리 접촉 및 업데이트

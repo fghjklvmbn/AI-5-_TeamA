@@ -38,6 +38,17 @@ KNOWLEDGE_RE = re.compile(
     r"가격|날씨|역사|수도|인구|문법|공식|스펙|추천|뭐야|무엇|알려|설명)"
 )
 HANGUL_TITLE_RE = re.compile(r"^[가-힣]{2}$")
+PORTRAIT_THEME_WORDS = (
+    "온기", "공감", "배려", "도전", "성장", "성실", "열정", "안정", "자유",
+    "창의", "탐구", "관계", "가족", "친구", "위로", "신뢰", "책임", "노력",
+    "긍정", "용기", "평온", "여유", "소통", "진심", "감성", "활력", "희망",
+    "행복", "취향", "일상", "감정", "안녕", "꿈", "목표",
+)
+PORTRAIT_TITLE_STOPWORDS = {
+    "사용", "대화", "모습", "특징", "세션", "내용", "사실", "생각", "마음",
+    "정도", "부분", "관련", "기반", "종합", "통해", "대한", "관한", "아직",
+    "조금", "여러", "가지", "보여", "있어", "하며", "하고", "하는", "되어",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +63,43 @@ class PortraitEngine:
     LEASE_SECONDS = 120
     HEARTBEAT_SECONDS = 30
     LOCAL_VECTOR_DIMENSIONS = 384
+    MIN_SESSIONS = 6
+    MIN_TURNS = 11
+    MIN_USER_CHARACTERS = 751
 
     def __init__(self, db: Database):
         self.db = db
+
+    @classmethod
+    def readiness_counts(cls, db: Database, user_id: str) -> tuple[int, int, int]:
+        session_count = 0
+        turn_count = 0
+        character_count = 0
+        for session in db.list_sessions(user_id):
+            history = db.get_all_history(user_id, session["id"])
+            if history:
+                session_count += 1
+            turn_count += len(history)
+            character_count += sum(
+                len(str(row["user_text"] or "").strip()) for row in history
+            )
+        return session_count, turn_count, character_count
+
+    @classmethod
+    def readiness_error(cls, counts: tuple[int, int, int]) -> str | None:
+        session_count, turn_count, character_count = counts
+        if (
+            session_count >= cls.MIN_SESSIONS
+            and turn_count >= cls.MIN_TURNS
+            and character_count >= cls.MIN_USER_CHARACTERS
+        ):
+            return None
+        return (
+            "자화상을 만들려면 대화가 더 필요합니다. "
+            f"현재 세션 {session_count}/{cls.MIN_SESSIONS}개, "
+            f"대화 {turn_count}/{cls.MIN_TURNS}턴, "
+            f"사용자 글자 {character_count}/{cls.MIN_USER_CHARACTERS}자입니다."
+        )
 
     @staticmethod
     def relevance_weight(text: str) -> float:
@@ -148,6 +193,46 @@ class PortraitEngine:
         return cls._paragraph("사용자의 주요 자기표현: " + " / ".join(snippets), 320)
 
     @staticmethod
+    def _title_from_summary(summary: str, feature_summaries: list[str]) -> str:
+        """Choose a compact theme that is visibly supported by the portrait text."""
+        evidence = " ".join([summary, *feature_summaries])
+        ranked_themes = [
+            (evidence.count(word), summary.find(word), index, word)
+            for index, word in enumerate(PORTRAIT_THEME_WORDS)
+            if len(word) == 2 and word in evidence
+        ]
+        if ranked_themes:
+            # Repetition across the final summary and session evidence wins. For a
+            # tie, prefer a theme explicitly stated earlier in the final summary.
+            return max(
+                ranked_themes,
+                key=lambda item: (item[0], -(item[1] if item[1] >= 0 else 10_000), -item[2]),
+            )[3]
+
+        candidates = [
+            word for word in re.findall(r"(?<![가-힣])[가-힣]{2}(?![가-힣])", evidence)
+            if word not in PORTRAIT_TITLE_STOPWORDS
+        ]
+        if candidates:
+            return max(candidates, key=lambda word: (candidates.count(word), -candidates.index(word)))
+        return "마음"
+
+    @classmethod
+    def aligned_title(
+        cls, title: str | None, summary: str | None, feature_summaries: list[str] | None = None,
+    ) -> str:
+        """Keep a generated title only when the displayed explanation supports it."""
+        clean_title = str(title or "").strip()
+        clean_summary = str(summary or "").strip()
+        if (
+            HANGUL_TITLE_RE.fullmatch(clean_title)
+            and clean_title in clean_summary
+            and clean_title not in PORTRAIT_TITLE_STOPWORDS
+        ):
+            return clean_title
+        return cls._title_from_summary(clean_summary, feature_summaries or [])
+
+    @staticmethod
     def _parse_final(raw: str, feature_summaries: list[str]) -> tuple[str, str]:
         parsed: dict = {}
         try:
@@ -158,11 +243,6 @@ class PortraitEngine:
         except (json.JSONDecodeError, AttributeError, TypeError):
             parsed = {}
 
-        title = str(parsed.get("title") or "").strip()
-        if not HANGUL_TITLE_RE.fullmatch(title):
-            hangul = "".join(re.findall(r"[가-힣]", title))
-            title = hangul[:2] if len(hangul) >= 2 else "마음"
-
         summary = PortraitEngine._paragraph(str(parsed.get("summary") or ""), 500)
         if not summary:
             evidence = " ".join(feature_summaries)
@@ -171,6 +251,12 @@ class PortraitEngine:
                 "아직 자화상을 그릴 만큼 일상과 마음에 관한 대화가 충분하지 않아요.",
                 500,
             )
+
+        # A syntactically valid but unrelated two-letter title is more confusing
+        # than a fallback. Require the title to be grounded in the final summary.
+        title = PortraitEngine.aligned_title(
+            str(parsed.get("title") or ""), summary, feature_summaries,
+        )
         return title, summary
 
     @classmethod
@@ -328,6 +414,20 @@ class PortraitEngine:
                 except ValueError:
                     pass
             await asyncio.sleep(delay)
+
+        readiness_error = self.readiness_error(
+            self.readiness_counts(self.db, user_id),
+        )
+        if readiness_error:
+            failed = self.db.fail_portrait(
+                user_id, generation_id, worker_id, readiness_error,
+            )
+            if failed and manage_operation:
+                self._transition_operation(
+                    operation_id, "failed", error_code="portrait_not_ready",
+                    reason="portrait_minimum_evidence_not_met",
+                )
+            return
 
         if manage_operation:
             self._transition_operation(

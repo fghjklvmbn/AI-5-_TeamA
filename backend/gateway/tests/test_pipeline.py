@@ -78,7 +78,7 @@ def test_generate_retries_once_when_llm_returns_blank():
     async def completion(_messages, temperature, model=None, **_kwargs):
         return next(responses)
     pipeline._completion = completion
-    assert asyncio.run(pipeline.generate("안녕", "", [])) == "다시 생성한 답변입니다."
+    assert asyncio.run(pipeline.generate("설명해줘", "", [])) == "다시 생성한 답변입니다."
 
 
 def test_completion_disables_reasoning_without_mutating_stored_messages(monkeypatch):
@@ -98,6 +98,7 @@ def test_completion_disables_reasoning_without_mutating_stored_messages(monkeypa
             captured["messages"] = json["messages"]
             captured["reasoning_effort"] = json.get("reasoning_effort")
             captured["max_tokens"] = json["max_tokens"]
+            captured["chat_template_kwargs"] = json.get("chat_template_kwargs")
             return Response()
 
     monkeypatch.setattr("memorypal_api.services.pipeline.httpx.AsyncClient", lambda **_kwargs: Client())
@@ -106,6 +107,7 @@ def test_completion_disables_reasoning_without_mutating_stored_messages(monkeypa
     assert captured["messages"][-1]["content"].count("/nothink") == 1
     assert captured["reasoning_effort"] is None
     assert captured["max_tokens"] == 768
+    assert captured["chat_template_kwargs"] == {"enable_thinking": False}
     assert original[-1]["content"] == "오늘 지쳤어"
 
 
@@ -229,6 +231,7 @@ def test_completion_thinking_mode_reserves_reasoning_budget(monkeypatch, reasoni
     assert not captured["messages"][-1]["content"].endswith("/nothink")
     assert captured["reasoning_effort"] == reasoning_effort
     assert captured["max_tokens"] == 4096
+    assert "chat_template_kwargs" not in captured
     assert original[-1]["content"] == "19 곱하기 23은?"
 
 
@@ -266,6 +269,7 @@ def test_agent_planner_accepts_only_an_allowed_read_only_action():
 
     assert (action, query) == ("document_search", "배포 일정")
     assert captured["temperature"] == 0.0
+    assert captured["model"] == "hyperclovax-seed-text-instruct-1.5b"
     assert "읽기 전용" in captured["messages"][0]["content"]
 
 
@@ -305,6 +309,35 @@ def test_generate_forwards_selected_reasoning_effort():
     ))
 
     assert captured == {"thinking_mode": True, "reasoning_effort": "high"}
+
+
+def test_companion_forces_thinking_mode_off():
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    async def completion(
+        _messages, temperature, model=None, thinking_mode=False,
+        reasoning_effort=None, **_kwargs,
+    ):
+        captured.update({
+            "model": model,
+            "thinking_mode": thinking_mode,
+            "reasoning_effort": reasoning_effort,
+        })
+        return "안정적인 동반자 답변"
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "오늘 힘들었어", "", [], persona="emotional_companion",
+        thinking_mode=True, reasoning_effort="high",
+    ))
+
+    assert answer == "안정적인 동반자 답변"
+    assert captured == {
+        "model": "memorypal_ai",
+        "thinking_mode": False,
+        "reasoning_effort": None,
+    }
 
 
 def test_thinking_mode_blank_answer_falls_back_without_reasoning():
@@ -373,10 +406,35 @@ def test_companion_retries_with_compact_context_without_model_swap():
 def test_generate_uses_casual_korean_prompt_when_enabled():
     pipeline = ModelPipeline(load_settings()); captured = {}
     async def completion(messages, temperature, model=None, **_kwargs):
-        captured["system"] = messages[0]["content"]; return "알겠어"
+        captured["system"] = messages[0]["content"]
+        captured["user"] = messages[-1]["content"]
+        return "알겠어"
     pipeline._completion = completion
-    asyncio.run(pipeline.generate("안녕", "", [], casual_mode=True))
+    asyncio.run(pipeline.generate("인공지능을 설명해줘", "", [], casual_mode=True))
     assert "반말(해체)" in captured["system"]
+    assert "현재 사용자가 말투를 명시했다면 그 요구를 우선" in captured["user"]
+    assert captured["user"].rfind("반말(해체)") > captured["user"].rfind("인공지능을 설명")
+
+
+@pytest.mark.parametrize("persona", ["default", "none"])
+def test_non_casual_mode_repeats_honorific_style_after_user_content(persona):
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured["system"] = messages[0]["content"]
+        captured["user"] = messages[-1]["content"]
+        return "알겠어요"
+
+    pipeline._completion = completion
+    asyncio.run(pipeline.generate(
+        "인공지능을 설명해줘", "", [], casual_mode=False, persona=persona,
+    ))
+
+    assert "존댓말(해요체)" in captured["system"]
+    assert "과거 assistant 답변의 반말" in captured["system"]
+    assert "현재 사용자가 말투를 명시했다면 그 요구를 우선" in captured["user"]
+    assert captured["user"].rfind("존댓말(해요체)") > captured["user"].rfind("인공지능을 설명")
 
 
 def test_generate_routes_each_persona_to_its_own_model():
@@ -388,6 +446,64 @@ def test_generate_routes_each_persona_to_its_own_model():
     asyncio.run(pipeline.generate("질문", "", [], persona="emotional_companion"))
     asyncio.run(pipeline.generate("질문", "", [], persona="none"))
     assert models == ["qwen3.5-4b", "memorypal_ai", "qwen3.5-4b"]
+
+
+def test_default_persona_keeps_prompt_but_uses_selected_model():
+    pipeline = ModelPipeline(load_settings()); captured = {}
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured.update(model=model, system=messages[0]["content"])
+        return "선택 모델 답변"
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "질문", "", [], persona="default", model_override="account-model-2b",
+    ))
+    assert answer == "선택 모델 답변"
+    assert captured["model"] == "account-model-2b"
+    assert "MemoryPal이라는 한국어 대화 서비스의 기본 어댑티브 페르소나" in captured["system"]
+    assert "기반 모델이 바뀌어도" in captured["system"]
+
+
+def test_default_persona_returns_stable_greeting_without_calling_model():
+    pipeline = ModelPipeline(load_settings())
+    deltas = []
+
+    async def completion(*_args, **_kwargs):
+        raise AssertionError("standalone greeting must not call the model")
+
+    async def on_delta(value):
+        deltas.append(value)
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "안녕하세요!", "", [], persona="default", model_override="another-model",
+        on_delta=on_delta,
+    ))
+
+    assert answer == "안녕하세요 MemoryPal입니다. 무엇을 도와드릴까요?"
+    assert deltas == [answer]
+
+
+def test_default_persona_does_not_treat_greeting_with_question_as_greeting_only():
+    pipeline = ModelPipeline(load_settings())
+    calls = []
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        calls.append((messages, temperature, model))
+        return "질문에 대한 답변"
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "안녕하세요, RAG가 무엇인가요?", "", [], persona="default",
+        model_override="another-model",
+    ))
+
+    assert answer == "질문에 대한 답변"
+    assert len(calls) == 1
+    assert calls[0][1] == 0.55
+    assert calls[0][2] == "another-model"
+    assert "어댑티브 응답 규칙" in calls[0][0][-1]["content"]
 
 
 @pytest.mark.parametrize(
@@ -424,7 +540,7 @@ def test_none_persona_is_neutral_but_keeps_memory_web_and_document_context(
     assert captured["model"] == "qwen3.5-4b"
 
 
-def test_companion_uses_its_model_for_memory_judgment():
+def test_all_personas_use_the_utility_model_for_memory_judgment():
     pipeline = ModelPipeline(load_settings()); models = []
     async def completion(_messages, temperature, model=None, **_kwargs):
         models.append(model); return "[]"
@@ -438,10 +554,10 @@ def test_companion_uses_its_model_for_memory_judgment():
     asyncio.run(pipeline.summarize_user_note(
         "라떼 레시피", persona="emotional_companion",
     ))
-    assert models == ["memorypal_ai", "memorypal_ai", "memorypal_ai"]
+    assert models == ["hyperclovax-seed-text-instruct-1.5b"] * 3
 
 
-def test_none_persona_keeps_memory_extraction_on_the_default_model():
+def test_none_persona_uses_the_utility_model_for_memory_extraction():
     pipeline = ModelPipeline(load_settings())
     models = []
 
@@ -456,7 +572,7 @@ def test_none_persona_keeps_memory_extraction_on_the_default_model():
     ))
     asyncio.run(pipeline.summarize_user_note("커피 취향", persona="none"))
 
-    assert models == ["qwen3.5-4b"] * 3
+    assert models == ["hyperclovax-seed-text-instruct-1.5b"] * 3
 
 
 def test_default_persona_limits_answer_to_200_characters():

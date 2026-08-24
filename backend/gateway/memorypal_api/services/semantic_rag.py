@@ -83,7 +83,9 @@ class SemanticRagEngine:
         ]
         document_namespace = f"{self.DOCUMENT_NAMESPACE_PREFIX}{session_id}"
         document_sources: list[tuple[str, str, dict[str, Any]]] = []
-        for attachment in self.db.list_attachments(user_id, session_id):
+        for attachment in self.document_engine.attachments_for_query(
+            user_id, session_id, query,
+        ):
             for index, chunk in enumerate(self.document_engine._chunks(attachment["text_content"])):
                 document_sources.append((
                     f"{attachment['id']}:{index}",
