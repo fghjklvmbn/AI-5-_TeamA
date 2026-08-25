@@ -112,7 +112,7 @@ class DocumentEngine:
         active_ids = {str(row["id"]) for row in active}
         all_rows = list(self.db.list_all_attachments(user_id, session_id))
         historical_reference = any(phrase in query.casefold() for phrase in (
-            "전에 올린", "이전에 올린", "아까 올린", "업로드했던", "첨부했던",
+            "방금 올린", "방금 첨부한", "전에 올린", "이전에 올린", "아까 올린", "업로드했던", "첨부했던",
             "그 파일", "그 문서", "올렸던 파일", "올렸던 문서",
         ))
         consumed = [
@@ -128,8 +128,7 @@ class DocumentEngine:
         reusable = explicitly_named or (consumed[-1:] if historical_reference else [])
         return [*active, *reusable]
 
-    def retrieve_context(self, user_id: str, session_id: str, query: str) -> str:
-        rows = self.attachments_for_query(user_id, session_id, query)
+    def context_from_rows(self, rows: list, query: str) -> str:
         if not rows:
             return ""
         query_tokens = set(TOKEN_RE.findall(query.lower()))
@@ -146,3 +145,8 @@ class DocumentEngine:
         return "\n\n".join(
             f"[첨부파일: {filename}]\n{chunk}" for _, _, filename, chunk in selected
         )[:4_000]
+
+    def retrieve_context(self, user_id: str, session_id: str, query: str) -> str:
+        return self.context_from_rows(
+            self.attachments_for_query(user_id, session_id, query), query,
+        )

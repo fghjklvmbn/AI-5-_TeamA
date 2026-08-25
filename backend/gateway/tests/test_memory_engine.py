@@ -124,6 +124,27 @@ class MemoryEngineTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["memory_type"], "preference")
 
+    def test_category_recall_keeps_older_relevant_preference_in_fallback(self):
+        contents = (
+            "나는 음악 감상을 좋아해",
+            "짧은 답변 선호",
+            "따뜻한 위로를 선호해",
+            "밤에 활동하는 것을 좋아해",
+            "과자를 좋아해",
+        )
+        for content in contents:
+            self.engine.remember(
+                self.user["id"], self.session["id"],
+                MemoryCandidate("preference", content, 0.9, 0.8),
+            )
+
+        result = self.engine.retrieve(
+            self.user["id"], "내가 좋아한다고 기억한 활동은 뭐야?",
+        )
+
+        self.assertTrue(any("음악" in row["content"] for row in result))
+        self.assertEqual(len(result), len(contents))
+
     def test_related_question_can_use_memory_without_recall_phrase(self):
         self.engine.remember(self.user["id"], self.session["id"], MemoryCandidate("schedule", "금요일 오후에 치과 예약이 있어", 0.9, 0.8))
         result = self.engine.retrieve(self.user["id"], "치과 예약은 언제야?")
@@ -167,6 +188,20 @@ class MemoryEngineTests(unittest.TestCase):
 
         self.assertEqual(
             self.engine.automatic_long_term_candidates(self.user["id"], candidates),
+            [],
+        )
+
+    def test_automatic_long_term_memory_does_not_promote_repeated_questions(self):
+        candidate = MemoryCandidate("profile", "내가 좋아하는 활동", 0.96, 0.9)
+        second_session = self.db.create_session(self.user["id"])
+        for session in (self.session, second_session):
+            self.db.save_conversation(
+                self.user["id"], session["id"],
+                "내가 좋아한다고 기억한 활동은 뭐야?", "음악 감상이에요.",
+            )
+
+        self.assertEqual(
+            self.engine.automatic_long_term_candidates(self.user["id"], [candidate]),
             [],
         )
 

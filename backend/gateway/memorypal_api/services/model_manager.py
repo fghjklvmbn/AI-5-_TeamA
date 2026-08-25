@@ -218,7 +218,14 @@ class ModelManager:
             for job in state.get(user_id, [])
             if str(job.get("status") or "").casefold() in {"completed", "complete", "downloaded"}
         }
-        default = {self._model_identity(self.settings.llm_default_model)}
+        default = {
+            self._model_identity(model_key)
+            for model_key in (
+                self.settings.llm_default_model,
+                *getattr(self.settings, "llm_default_model_choices", ()),
+            )
+            if model_key
+        }
         visible = []
         for model in payload.get("models") or []:
             key = str(model.get("key") or ""); text = f"{key} {model.get('display_name') or ''}".casefold()
@@ -286,6 +293,16 @@ class ModelManager:
             "display_name": str((current or {}).get("display_name") or selected or ""),
             "loaded": bool((current or {}).get("loaded_instances")),
         }
+
+    def preferred_model(self, user_id: str) -> str | None:
+        """Return the model explicitly selected for an account, if any.
+
+        Chat requests do not require clients to repeat ``model_key``.  Keeping
+        this lookup local lets the Gateway honor the persisted account choice
+        without querying LM Studio merely to decide which model to request.
+        """
+        selected = self._read_preferences().get(user_id)
+        return str(selected) if selected else None
 
     async def select_model(
         self, user_id: str, model_key: str | None, persona: str = "none",

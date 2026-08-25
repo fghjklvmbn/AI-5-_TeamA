@@ -192,6 +192,40 @@ def test_synthesize_upload_authenticates_and_removes_temporary_audio(monkeypatch
     assert not Path(observed["path"]).exists()
 
 
+def test_synthesize_upload_normalizes_browser_webm_before_synthesis(monkeypatch, tmp_path):
+    monkeypatch.setenv("MEMORYPAL_MODEL_SERVICE_TOKEN", MODEL_SERVICE_TOKEN)
+    monkeypatch.setenv("MEMORYPAL_TTS_REFERENCE_UPLOAD_DIR", str(tmp_path))
+    observed = {}
+
+    def fake_run(command, **_kwargs):
+        observed["command"] = command
+        Path(command[-1]).write_bytes(b"RIFF" + b"\x00" * 64)
+        return type("Result", (), {"returncode": 0})()
+
+    def synthesize(**kwargs):
+        observed["path"] = kwargs["ref_audio"]
+        assert Path(kwargs["ref_audio"]).suffix == ".wav"
+        assert Path(kwargs["ref_audio"]).is_file()
+        return {"audio_path": "http://tts/outputs/upload.wav"}
+
+    monkeypatch.setattr(tts_router.shutil, "which", lambda _name: "ffmpeg")
+    monkeypatch.setattr(tts_router.subprocess, "run", fake_run)
+    monkeypatch.setattr(tts_router.tts_service, "synthesize", synthesize)
+
+    with TestClient(_test_app()) as client:
+        response = client.post(
+            "/synthesize-upload",
+            headers={"Authorization": f"Bearer {MODEL_SERVICE_TOKEN}"},
+            data={"text": "hello", "ref_text": "reference", "language": "korean"},
+            files={"ref_audio": ("recording.webm", b"webm-audio", "audio/webm")},
+        )
+
+    assert response.status_code == 200
+    assert "-ac" in observed["command"]
+    assert "24000" in observed["command"]
+    assert not Path(observed["path"]).exists()
+
+
 def test_synthesize_fails_fast_when_gpu_slot_is_busy(monkeypatch):
     monkeypatch.setenv("MEMORYPAL_MODEL_SERVICE_TOKEN", MODEL_SERVICE_TOKEN)
     app = _test_app()

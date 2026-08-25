@@ -248,14 +248,13 @@ function LoginView({
   );
 }
 
-function Sidebar({ page, onPage, user, onLogout, open, onClose, health }: {
+function Sidebar({ page, onPage, user, onLogout, open, onClose }: {
   page: Page;
   onPage: (page: Page) => void;
   user: AdminUser;
   onLogout: () => void;
   open: boolean;
   onClose: () => void;
-  health: 'current' | 'syncing' | 'delayed';
 }) {
   return (
     <>
@@ -278,9 +277,6 @@ function Sidebar({ page, onPage, user, onLogout, open, onClose, health }: {
             );
           })}
         </nav>
-        <div className="sidebar-status">
-          <div className={`live-dot ${health}`}><i /> {health === 'syncing' ? '메타데이터 동기화 중' : health === 'delayed' ? '연결 상태 확인 필요' : '운영 메타데이터 최신'}</div>
-        </div>
         <div className="admin-profile">
           <div className="avatar">{(user.display_name || user.email || 'A').slice(0, 1).toUpperCase()}</div>
           <div><strong>{user.display_name || '관리자'}</strong><span>{user.email}</span></div>
@@ -961,7 +957,6 @@ function CorrelationDrawer({ id, detail, loading, onClose }: { id: string; detai
       <aside className="drawer">
         <header><div><p className="section-kicker">CORRELATION TRACE</p><h2>요청 흐름 상세</h2></div><button className="icon-button" onClick={onClose} aria-label="상세 닫기"><X size={20} /></button></header>
         <div className="correlation-id"><Fingerprint size={17} /><code>{id}</code></div>
-        <div className="privacy-note"><ShieldCheck size={17} /><p><strong>민감 정보 보호됨</strong><span>요청·응답 본문, 토큰, 음성 데이터는 이 추적에 포함되지 않습니다.</span></p></div>
         {loading ? <LoadingRows /> : timeline.length ? <div className="timeline">
           {timeline.map((item, index) => <div className="timeline-item" key={`${item.type}-${item.at}-${index}`}>
             <div className={`timeline-dot ${statusTone(item.status)}`}><i /></div>
@@ -1179,7 +1174,7 @@ function App() {
   const meta = PAGE_META[page];
   return (
     <div className="admin-shell">
-      <Sidebar page={page} onPage={changePage} user={user} onLogout={logout} open={mobileNav} onClose={() => setMobileNav(false)} health={error ? 'delayed' : refreshing ? 'syncing' : 'current'} />
+      <Sidebar page={page} onPage={changePage} user={user} onLogout={logout} open={mobileNav} onClose={() => setMobileNav(false)} />
       <main className="content">
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setMobileNav(true)} aria-label="메뉴 열기"><Menu size={21} /></button>

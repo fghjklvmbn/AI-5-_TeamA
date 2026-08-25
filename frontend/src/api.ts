@@ -428,13 +428,16 @@ export const api = {
       token,
     );
   },
-  messageAudio(token: string, messageId: string, voiceId?: string, trace?: AIPipelineTrace) {
+  messageAudio(
+    token: string, messageId: string, voiceId?: string,
+    trace?: AIPipelineTrace, force = false,
+  ) {
     return request<Message>(
       `/chat/messages/${messageId}/audio`,
       {
         method: 'POST',
         headers: pipelineHeaders(trace),
-        body: JSON.stringify({ voice_id: voiceId }),
+        body: JSON.stringify({ voice_id: voiceId, force }),
       },
       token,
     );

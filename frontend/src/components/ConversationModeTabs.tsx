@@ -5,7 +5,7 @@ import { useTheme, type ThemeColors } from '../theme';
 import type { ConversationMode } from '../types';
 
 const OPTIONS: Array<{ id: ConversationMode; icon: string; label: string }> = [
-  { id: 'live', icon: '◉', label: '실시간' },
+  { id: 'live', icon: '◉', label: '캐릭터' },
   { id: 'chat', icon: '≡', label: '채팅' },
   { id: 'hybrid', icon: '◫', label: '하이브리드' },
 ];

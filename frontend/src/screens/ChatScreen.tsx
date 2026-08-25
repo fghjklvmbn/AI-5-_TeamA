@@ -17,13 +17,14 @@ import {
 import { api, createAIPipelineTrace, type AIPipelineTrace } from '../api';
 import { unlockWebAudio } from '../audioPlayback';
 import { MarkdownMessage } from '../components/MarkdownMessage';
+import { ConversationContextControls } from '../components/ConversationContextControls';
 import { ConversationModeTabs } from '../components/ConversationModeTabs';
 import { MessageAudioButton } from '../components/MessageAudioButton';
 import { characterCueForPlayback, useCharacterAudioState } from '../hooks/useCharacterAudioState';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
 import type { Attachment, CharacterActivity, CharacterId, ConversationMode, Message, Persona, ReasoningEffort, Session } from '../types';
-import { splitSearchSources } from '../utils/messageContent';
+import { recentVoiceRefreshMessages, splitSearchSources } from '../utils/messageContent';
 
 const CharacterStage = React.lazy(() => import('../components/CharacterStage'));
 
@@ -47,6 +48,16 @@ type Props = {
   onVoiceProcessingChange: (active: boolean, transcript?: string) => void;
   onConversationModeChange: (mode: ConversationMode) => void;
   onCharacterChange: (characterId: CharacterId) => void;
+  onPersonaChange: (persona: Persona) => void | Promise<void>;
+  onModelKeyChange: (modelKey: string | undefined) => void | Promise<void>;
+  onVoiceIdChange: (voiceId: string | undefined) => void;
+};
+
+type VoiceRefreshProgress = {
+  completed: number;
+  total: number;
+  failed: number;
+  messageId: string;
 };
 
 function isAbortError(reason: unknown): boolean {
@@ -96,6 +107,9 @@ export function ChatScreen({
   onVoiceProcessingChange,
   onConversationModeChange,
   onCharacterChange,
+  onPersonaChange,
+  onModelKeyChange,
+  onVoiceIdChange,
 }: Props) {
   const { colors } = useTheme();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
@@ -122,11 +136,13 @@ export function ChatScreen({
   const [deletingAttachmentId, setDeletingAttachmentId] = useState<string>();
   const [regeneratingMessageId, setRegeneratingMessageId] = useState<string>();
   const [generatingAudioMessageId, setGeneratingAudioMessageId] = useState<string>();
+  const [voiceRefreshProgress, setVoiceRefreshProgress] = useState<VoiceRefreshProgress>();
   const [expandedSourceMessageIds, setExpandedSourceMessageIds] = useState<Set<string>>(
     () => new Set(),
   );
   const characterAudio = useCharacterAudioState();
   const generatingAudioMessageIdRef = useRef<string | undefined>(undefined);
+  const inputRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
   const activeSessionIdRef = useRef(activeSessionId);
   const isActiveRef = useRef(isActive);
@@ -140,7 +156,8 @@ export function ChatScreen({
     || attachmentBusy
     || !!deletingAttachmentId
     || !!deletingSessionId
-    || !!regeneratingMessageId;
+    || !!regeneratingMessageId
+    || !!voiceRefreshProgress;
   const shouldSpeak = conversationMode === 'live' || voiceReplyEnabled;
   const characterActivity: CharacterActivity = voiceRecorder.isRecording
     ? 'listening'
@@ -317,7 +334,13 @@ export function ChatScreen({
       created_at: new Date().toISOString(),
       attachments: requestAttachments,
     };
-    if (!preserveInput) setText('');
+    if (!preserveInput) {
+      setText('');
+      // react-native-web can retain its native textarea value after an Enter
+      // submit even though the controlled state is already empty. Clear both
+      // layers so the sent text cannot be submitted again accidentally.
+      inputRef.current?.clear();
+    }
     if (requestAttachmentIds.size) {
       attachmentsRequestRef.current += 1;
       setAttachments((current) => current.filter(
@@ -562,6 +585,52 @@ export function ChatScreen({
     }
   };
 
+  const changeResponseVoice = async (nextVoiceId: string | undefined) => {
+    if (nextVoiceId === voiceId) return;
+    onVoiceIdChange(nextVoiceId);
+    const targets = recentVoiceRefreshMessages(messages);
+    if (!targets.length) return;
+    const operationLock = acquireContextMutation();
+    if (!operationLock) return;
+    const requestedSessionId = activeSessionIdRef.current;
+    let failed = 0;
+    setAutoPlayMessageId(undefined);
+    try {
+      for (let index = 0; index < targets.length; index += 1) {
+        const message = targets[index]!;
+        generatingAudioMessageIdRef.current = message.id;
+        setGeneratingAudioMessageId(message.id);
+        setVoiceRefreshProgress({
+          completed: index, total: targets.length, failed, messageId: message.id,
+        });
+        try {
+          const updated = await api.messageAudio(
+            token, message.id, nextVoiceId, undefined, true,
+          );
+          if (!updated.audio_url) throw new Error('새 응답 음성을 생성하지 못했어요.');
+          if (activeSessionIdRef.current === requestedSessionId) {
+            setMessages((current) => upsertMessage(current, updated));
+          }
+        } catch {
+          failed += 1;
+        }
+        setVoiceRefreshProgress({
+          completed: index + 1, total: targets.length, failed, messageId: message.id,
+        });
+      }
+      if (failed) {
+        setError(`최근 ${targets.length}개 답변 중 ${failed}개의 음성을 변경하지 못했어요.`);
+      } else {
+        setError('');
+      }
+    } finally {
+      generatingAudioMessageIdRef.current = undefined;
+      setGeneratingAudioMessageId(undefined);
+      setVoiceRefreshProgress(undefined);
+      releaseContextMutation(operationLock);
+    }
+  };
+
   const toggleVoiceInput = async () => {
     if (!isActiveRef.current) return;
     if (!voiceRecorder.isRecording && (contextMutationBusy || contextMutationLockRef.current)) return;
@@ -753,6 +822,28 @@ export function ChatScreen({
       </View>
 
       <ConversationModeTabs compact={compact} value={conversationMode} onChange={onConversationModeChange} />
+      <ConversationContextControls
+        compact={compact}
+        disabled={contextMutationBusy || voiceRecorder.isRecording || voiceProcessing}
+        modelKey={modelKey}
+        onModelKeyChange={onModelKeyChange}
+        onPersonaChange={onPersonaChange}
+        onVoiceIdChange={(nextVoiceId) => { void changeResponseVoice(nextVoiceId); }}
+        persona={persona}
+        token={token}
+        voiceId={voiceId}
+      />
+      {!!voiceRefreshProgress && (
+        <View accessibilityLiveRegion="polite" style={styles.voiceRefreshStatus}>
+          <ActivityIndicator color={colors.primary} size="small" />
+          <View style={styles.voiceRefreshTextWrap}>
+            <Text style={styles.voiceRefreshTitle}>응답 음성을 변경하고 있어요</Text>
+            <Text style={styles.voiceRefreshDetail}>
+              최신 답변부터 순차 처리 중 · {Math.min(voiceRefreshProgress.completed + 1, voiceRefreshProgress.total)} / {voiceRefreshProgress.total}
+            </Text>
+          </View>
+        </View>
+      )}
 
       <View style={[
         styles.conversationArea,
@@ -930,6 +1021,7 @@ export function ChatScreen({
         </Pressable>
       </View> : <View style={[styles.composer, compact && styles.composerCompact, shortViewport && styles.composerShort]}>
         <TextInput
+          ref={inputRef}
           maxLength={8000}
           multiline
           onChangeText={setText}
@@ -978,7 +1070,7 @@ export function ChatScreen({
         </View>
       </View>}
 
-      <Modal animationType="slide" onRequestClose={() => setDrawer(false)} transparent visible={drawer}>
+      <Modal animationType="fade" onRequestClose={() => setDrawer(false)} transparent visible={drawer}>
         <Pressable onPress={() => setDrawer(false)} style={styles.backdrop}>
           <Pressable onPress={() => undefined} style={styles.drawer}>
             <View style={styles.drawerHandle} />
@@ -1025,6 +1117,10 @@ const createStyles = (colors: ThemeColors, compact: boolean) => StyleSheet.creat
   headerTitleWrap: { flex: 1, alignItems: 'center' },
   headerTitle: { color: colors.ink, fontSize: compact ? 14 : 15, fontWeight: '800', maxWidth: compact ? 190 : 230 },
   headerSub: { color: colors.muted, fontSize: compact ? 9 : 10, marginTop: 2 },
+  voiceRefreshStatus: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: compact ? 12 : 16, paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.primarySoft },
+  voiceRefreshTextWrap: { flex: 1, minWidth: 0 },
+  voiceRefreshTitle: { color: colors.primaryDark, fontSize: 11, fontWeight: '900' },
+  voiceRefreshDetail: { color: colors.muted, fontSize: 9, marginTop: 3 },
   conversationArea: { flex: 1, minHeight: 0 },
   hybridArea: { flexDirection: 'row' },
   hybridAreaCompact: { flexDirection: 'column' },

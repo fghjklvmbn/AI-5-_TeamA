@@ -36,6 +36,11 @@ def test_consumed_attachment_is_reused_only_when_user_mentions_it(tmp_path):
     )
     assert "project-plan.md" in reused
     assert "8월 20일" in reused
+    just_uploaded = engine.retrieve_context(
+        user["id"], session["id"], "방금 올린 문서를 기준으로 일정도 알려줘",
+    )
+    assert "project-plan.md" in just_uploaded
+    assert "8월 20일" in just_uploaded
 
 
 def test_rejects_unsupported_or_empty_files(tmp_path):

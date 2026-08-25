@@ -4,6 +4,7 @@ import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, TextInput
 import { api } from '../api';
 import { useTheme, type ThemeColors } from '../theme';
 import type { HuggingFaceModel, LocalModel, ModelDownloadJob, ModelManagerStatus } from '../types';
+import { isHyperClovaConversationModel } from '../utils/modelChoices';
 
 type Props = {
   token: string;
@@ -90,7 +91,7 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
   useEffect(() => {
     if (!models.length || !selectedModelKey) return;
     if (models.some((model) => model.key === selectedModelKey)) return;
-    const fallback = models.find((model) => model.key.toLowerCase().includes('qwen3.5-4b'));
+    const fallback = models.find(isHyperClovaConversationModel);
     onSelectedModelKeyChange(fallback?.key);
   }, [models, onSelectedModelKeyChange, selectedModelKey]);
 
@@ -162,7 +163,7 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
       await api.loadModel(token, model.key, 40960);
       onSelectedModelKeyChange(model.key);
       await refresh();
-      setMessage(`${model.display_name || model.key} 모델을 40K 컨텍스트로 로드하고 선택했습니다.`);
+      setMessage(`${model.display_name || model.key} 모델을 로드하고 선택했습니다.`);
     } catch (reason) {
       const errorMessage = reason instanceof Error ? reason.message : '모델을 로드하지 못했습니다.';
       if (errorMessage.includes('리소스가 부족하여 로드가 제한됩니다.')) {
@@ -274,7 +275,6 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
       {models.map((model) => {
         const loaded = modelInstances(model).length > 0;
         const selected = selectedModelKey === model.key;
-        const quantization = modelQuantization(model);
         const loadingThisModel = busyKey === `load:${model.key}`;
         return <View
           accessibilityState={{ disabled: modelLoadInProgress }}
@@ -282,7 +282,7 @@ export function ModelManager({ token, selectedModelKey, onSelectedModelKeyChange
           style={[styles.card, selected && styles.cardSelected, modelLoadInProgress && styles.modelCardDisabled]}
         >
           <View style={styles.modelTitleRow}><Text numberOfLines={1} style={styles.cardTitle}>{model.display_name || model.key}</Text>{model.processing ? <Text style={styles.processingBadge}>처리중</Text> : loaded && <Text style={styles.badge}>로드됨</Text>}</View>
-          <Text numberOfLines={1} style={styles.muted}>{model.key}{quantization ? ` · ${quantization}` : ''}{model.size_bytes ? ` · ${readableBytes(model.size_bytes)}` : ''}</Text>
+          <Text numberOfLines={1} style={styles.muted}>{model.key}{model.size_bytes ? ` · ${readableBytes(model.size_bytes)}` : ''}</Text>
           <View style={styles.actionRow}>
             {loaded ? <>
               <Pressable disabled={!!busyKey || selected} onPress={() => onSelectedModelKeyChange(model.key)} style={[styles.primaryButton, (!!busyKey || selected) && styles.disabled]}><Text style={styles.primaryText}>{selected ? '선택됨' : '대화에 선택'}</Text></Pressable>

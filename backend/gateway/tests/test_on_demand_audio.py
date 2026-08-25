@@ -109,6 +109,17 @@ def test_on_demand_audio_is_generated_once_and_scoped_to_owner(tmp_path):
         assert cached.status_code == 200
         assert calls == [("음성으로 만들 답변", None, "calm")]
 
+        replaced = client.post(
+            path,
+            json={"voice_id": None, "force": True},
+            headers=owner_headers,
+        )
+        assert replaced.status_code == 200
+        assert calls == [
+            ("음성으로 만들 답변", None, "calm"),
+            ("음성으로 만들 답변", None, "calm"),
+        ]
+
         forbidden = client.post(
             path, json={}, headers={"Authorization": f"Bearer {other_token}"},
         )
@@ -336,6 +347,66 @@ def test_failed_chat_keeps_one_time_attachment_for_retry(tmp_path):
         assert app.state.db.get_attachment(user_id, attachment["id"]) is not None
 
 
+def test_regeneration_reuses_the_original_consumed_attachment(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+    document_contexts: list[str] = []
+
+    async def gather_context(**_kwargs) -> AgentContext:
+        # Reproduce a planner/retrieval pass that does not rediscover the file.
+        return AgentContext(
+            memories=[], document_context="", web_context="",
+            web_sources=[], steps_used=0,
+        )
+
+    async def generate(*_args, **kwargs) -> str:
+        document_contexts.append(kwargs["document_context"])
+        return "문서를 반영한 답변"
+
+    async def generate_character_cue(*_args, **_kwargs) -> dict:
+        return {
+            "emotion": "neutral", "intensity": 0.3,
+            "gesture": "idle", "voice_style": "calm",
+        }
+
+    async def extract_memories(*_args, **_kwargs) -> list:
+        return []
+
+    app.state.agent_loop.gather_context = gather_context
+    app.state.pipeline.generate = generate
+    app.state.pipeline.generate_character_cue = generate_character_cue
+    app.state.pipeline.extract_memories = extract_memories
+    with TestClient(app) as client:
+        user_id, token = register(client, "regenerate-attachment@example.com")
+        session = app.state.db.create_session(user_id)
+        attachment = app.state.db.create_attachment(
+            user_id, session["id"], "demo.txt", "text/plain", 18,
+            "시연일은 8월 25일", file_content="시연일은 8월 25일".encode("utf-8"),
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        created = client.post(
+            "/v1/chat/messages",
+            json={
+                "text": "첨부한 문서의 시연일을 알려줘",
+                "session_id": session["id"], "speak": False,
+            },
+            headers=headers,
+        )
+        message_id = created.json()["message"]["id"]
+        assert app.state.db.get_attachment(user_id, attachment["id"])["consumed_at"] is not None
+
+        regenerated = client.post(
+            f"/v1/chat/messages/{message_id}/regenerate",
+            json={"speak": False}, headers=headers,
+        )
+
+    assert regenerated.status_code == 200
+    assert "[첨부파일: demo.txt]" in document_contexts[-1]
+    assert "시연일은 8월 25일" in document_contexts[-1]
+
+
 def test_chat_voice_switch_controls_output_length_policy(tmp_path):
     settings = replace(
         load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
@@ -411,3 +482,59 @@ def test_chat_voice_switch_controls_output_length_policy(tmp_path):
             ("충분히 자세한 답변", "bright"),
             ("충분히 자세한 답변", "bright"),
         ]
+
+
+def test_chat_without_model_key_uses_account_preference(tmp_path):
+    settings = replace(
+        load_settings(), database_path=tmp_path / "memorypal.db", root_path="",
+    )
+    app = create_app(settings)
+    observed: dict[str, object] = {}
+
+    app.state.model_manager.preferred_model = lambda _user_id: "account-model-1.5b"
+
+    async def ensure_user_model(user_id: str, model_key: str) -> None:
+        observed["ensured"] = (user_id, model_key)
+
+    async def gather_context(**kwargs) -> AgentContext:
+        observed["context_model"] = kwargs["model_override"]
+        return AgentContext(
+            memories=[], document_context="", web_context="",
+            web_sources=[], steps_used=0,
+        )
+
+    async def generate(*_args, **kwargs) -> str:
+        observed["generation_model"] = kwargs["model_override"]
+        return "계정 선택 모델 응답"
+
+    async def generate_character_cue(*_args, **kwargs) -> dict:
+        observed["cue_model"] = kwargs["model_override"]
+        return {
+            "emotion": "neutral", "intensity": 0.4,
+            "gesture": "idle", "voice_style": "calm",
+        }
+
+    async def extract_memories(*_args, **_kwargs) -> list:
+        return []
+
+    app.state.model_manager.ensure_user_model = ensure_user_model
+    app.state.agent_loop.gather_context = gather_context
+    app.state.pipeline.generate = generate
+    app.state.pipeline.generate_character_cue = generate_character_cue
+    app.state.pipeline.extract_memories = extract_memories
+
+    with TestClient(app) as client:
+        user_id, token = register(client, "preferred-chat-model@example.com")
+        response = client.post(
+            "/v1/chat/messages",
+            json={"text": "선택 모델로 답해줘", "speak": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    assert observed == {
+        "ensured": (user_id, "account-model-1.5b"),
+        "context_model": "account-model-1.5b",
+        "generation_model": "account-model-1.5b",
+        "cue_model": "account-model-1.5b",
+    }

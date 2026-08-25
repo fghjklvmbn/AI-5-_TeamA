@@ -156,6 +156,7 @@ class Settings:
     llm_resource_url: str
     llm_api_key: str
     llm_default_model: str
+    llm_default_model_choices: tuple[str, ...]
     llm_companion_model: str
     llm_embedding_model: str
     llm_utility_model: str
@@ -217,7 +218,14 @@ def load_settings() -> Settings:
         llm_url=os.getenv("MEMORYPAL_LLM_URL", "http://127.0.0.1:8002").rstrip("/"),
         llm_resource_url=_optional_http_url("MEMORYPAL_LLM_RESOURCE_URL").rstrip("/"),
         llm_api_key=os.getenv("MEMORYPAL_LLM_API_KEY", "lm-studio"),
-        llm_default_model=os.getenv("MEMORYPAL_DEFAULT_LLM_MODEL", "qwen3.5-4b"),
+        llm_default_model=os.getenv(
+            "MEMORYPAL_DEFAULT_LLM_MODEL",
+            "hyperclovax-seed-text-instruct-1.5b",
+        ).strip() or "hyperclovax-seed-text-instruct-1.5b",
+        llm_default_model_choices=tuple(dict.fromkeys(_csv(
+            "MEMORYPAL_DEFAULT_LLM_MODEL_CHOICES",
+            "qwen3.5-4b,hyperclovax-seed-text-instruct-1.5b",
+        ))),
         llm_companion_model=os.getenv("MEMORYPAL_COMPANION_LLM_MODEL", "memorypal_ai"),
         llm_embedding_model=os.getenv(
             "MEMORYPAL_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5",

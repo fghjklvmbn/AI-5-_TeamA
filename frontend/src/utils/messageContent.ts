@@ -18,3 +18,13 @@ export function splitSearchSources(source: string): DisplayMessageContent {
     sourceCount: sources.match(/^\s*[-+*]\s+/gm)?.length ?? 0,
   };
 }
+
+export function recentVoiceRefreshMessages(messages: Message[], limit = 10): Message[] {
+  return messages
+    .filter((message) => (
+      !message.id.startsWith('pending-') && !!message.assistant_text.trim()
+    ))
+    .slice(-Math.max(0, limit))
+    .reverse();
+}
+import type { Message } from '../types';

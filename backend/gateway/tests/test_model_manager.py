@@ -19,7 +19,10 @@ def settings(**overrides):
         "lmstudio_model_root": None,
         "lmstudio_cli": "lms",
         "database_path": Path("data/test.db"),
-        "llm_default_model": "qwen3.5-4b",
+        "llm_default_model": "hyperclovax-seed-text-instruct-1.5b",
+        "llm_default_model_choices": (
+            "qwen3.5-4b", "hyperclovax-seed-text-instruct-1.5b",
+        ),
         "llm_companion_model": "memorypal_ai",
     }
     values.update(overrides)
@@ -360,11 +363,14 @@ def test_selected_model_is_persisted_per_user(tmp_path, monkeypatch):
         "loaded": True,
     }
     assert asyncio.run(manager.selected_model("user-1")) == selected
-    assert asyncio.run(manager.selected_model("user-2"))["model_key"] == "qwen3.5-4b"
+    assert asyncio.run(manager.selected_model("user-2"))["model_key"] == "hyperclovax-seed-text-instruct-1.5b"
+    assert manager.preferred_model("user-1") == "model-one-2b"
+    assert manager.preferred_model("user-2") is None
 
     cleared = asyncio.run(manager.select_model("user-1", None))
     assert cleared["model_key"] == "model-one-2b"
     assert asyncio.run(manager.selected_model("user-1"))["model_key"] == "model-one-2b"
+    assert manager.preferred_model("user-1") is None
 
 
 def test_selected_model_reports_companion_from_lmstudio_state(tmp_path, monkeypatch):

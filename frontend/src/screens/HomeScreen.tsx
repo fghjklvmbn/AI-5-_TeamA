@@ -7,6 +7,7 @@ import { RecordingOrb } from '../components/RecordingOrb';
 import { useLiveRecorder } from '../hooks/useLiveRecorder';
 import { useTheme, type ThemeColors } from '../theme';
 import type { ChatResponse, LocalModel, Persona, ReasoningEffort, User, Voice } from '../types';
+import { conversationModelChoices } from '../utils/modelChoices';
 
 type Props = {
   token: string;
@@ -109,6 +110,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
     || activeLocalModel?.display_name
     || activeModelKey
     || 'LM Studio 상태 확인 중';
+  const selectableModels = conversationModelChoices(localModels, persona);
 
   const refreshModels = async () => {
     setModelsLoading(true);
@@ -360,8 +362,8 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
             <View style={styles.modelLoading}><ActivityIndicator color={colors.primary} /><Text style={styles.modelLoadingText}>모델을 확인하고 있어요…</Text></View>
           ) : (
             <ScrollView style={styles.modelList} showsVerticalScrollIndicator={false}>
-              {!localModels.length && <Text style={styles.modelEmpty}>선택할 수 있는 다운로드된 LLM이 없습니다.{`\n`}설정에서 모델을 먼저 다운로드해 주세요.</Text>}
-              {localModels.map((model) => {
+              {!selectableModels.length && <Text style={styles.modelEmpty}>선택할 수 있는 기본 대화 모델이 없습니다.</Text>}
+              {selectableModels.map((model) => {
                 const selected = persona !== 'emotional_companion' && model.key === activeModelKey;
                 const loaded = !!model.loaded_instances?.length;
                 const busy = modelBusyKey === model.key;
@@ -375,7 +377,7 @@ export function HomeScreen({ token, user, casualMode, persona, voiceId, voiceRep
                   >
                     <View style={styles.modelOptionCopy}>
                       <Text numberOfLines={1} style={[styles.modelOptionTitle, selected && styles.modelOptionTitleSelected]}>{model.display_name || model.key}</Text>
-                      <Text numberOfLines={1} style={styles.modelOptionDetail}>{loaded ? '로드됨 · 바로 선택 가능' : '선택 시 40K로 로드'}{model.quantization ? ` · ${model.quantization}` : ''}</Text>
+                      <Text numberOfLines={1} style={styles.modelOptionDetail}>{loaded ? '로드됨 · 바로 선택 가능' : '로드 후 선택 가능'}</Text>
                     </View>
                     {busy ? <ActivityIndicator color={colors.primary} /> : <Text style={[styles.modelOptionState, selected && styles.modelOptionStateSelected]}>{selected ? '사용 중' : loaded ? '선택' : '로드'}</Text>}
                   </Pressable>

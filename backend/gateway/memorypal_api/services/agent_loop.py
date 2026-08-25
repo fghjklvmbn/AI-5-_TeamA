@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from .pipeline import ModelPipeline, PipelineUnavailable
@@ -60,6 +61,14 @@ class AgentLoop:
             "일정", "프로젝트", "파일", "노트", "메모",
         ))
 
+    @staticmethod
+    def _is_memory_save_request(user_text: str) -> bool:
+        return bool(re.search(
+            r"(?:기억해\s*(?:줘|주세요)|잊지\s*마)",
+            user_text,
+            flags=re.IGNORECASE,
+        ))
+
     async def gather_context(
         self,
         *,
@@ -79,23 +88,29 @@ class AgentLoop:
         tool_context = ToolCallContext(
             user_id=user_id, session_id=session_id, history=history,
         )
-        if self.tool_registry is not None:
+        memory_save_request = self._is_memory_save_request(user_text)
+        if self.tool_registry is not None and not memory_save_request:
             memory_result = await self.tool_registry.call(
                 "memory_search", {"query": user_text}, tool_context,
             )
             memories = list(memory_result.metadata.get("items") or [])
+        else:
+            memories = []
+        if self.tool_registry is not None:
             document_result = await self.tool_registry.call(
                 "document_search", {"query": user_text}, tool_context,
             )
             document_context = document_result.content
         else:
-            memories = list(memory_engine.retrieve(user_id, user_text))
+            if not memory_save_request:
+                memories = list(memory_engine.retrieve(user_id, user_text))
             document_context = document_engine.retrieve_context(user_id, session_id, user_text)
         if self.semantic_rag is not None:
             semantic = await self.semantic_rag.retrieve(
                 user_id=user_id, session_id=session_id, query=user_text,
             )
-            memories = self._merge_memories(memories, semantic.memories)
+            if not memory_save_request:
+                memories = self._merge_memories(memories, semantic.memories)
             document_context = self._merge_documents(
                 document_context, semantic.document_context,
             )
@@ -113,7 +128,10 @@ class AgentLoop:
             )
         observations: list[str] = []
         attempted: set[tuple[str, str]] = set()
-        allowed_tools = ["memory_search", "document_search"]
+        allowed_tools = (
+            ["document_search"] if memory_save_request
+            else ["memory_search", "document_search"]
+        )
 
         if not memories and not document_context and not web_context:
             return AgentContext(

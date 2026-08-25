@@ -68,13 +68,17 @@ async def model_capabilities(
     request: Request,
     persona: str = "default",
     model_key: str | None = None,
-    _user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_user),
 ):
     if persona not in {"default", "emotional_companion", "none"}:
         raise HTTPException(status_code=422, detail="Unsupported persona")
     if model_key and persona == "emotional_companion":
         raise HTTPException(status_code=422, detail="정서적 동반자는 전용 모델을 사용합니다.")
-    model = model_key or request.app.state.pipeline.model_for_persona(persona)
+    preferred_model = (
+        request.app.state.model_manager.preferred_model(user.id)
+        if persona != "emotional_companion" else None
+    )
+    model = model_key or preferred_model or request.app.state.pipeline.model_for_persona(persona)
     capabilities = await request.app.state.pipeline.reasoning_capabilities(model)
     if persona == "emotional_companion":
         return {
@@ -253,6 +257,28 @@ def merged_attachment_refs_json(conversation, rows) -> str:
         item = attachment_response(row).model_dump()
         by_id[item["id"]] = item
     return json.dumps(list(by_id.values()), ensure_ascii=False, separators=(",", ":"))
+
+
+def conversation_attachment_rows(db, user_id: str, session_id: str, conversation) -> list:
+    """Resolve the exact files captured on a stored message for regeneration."""
+    try:
+        payload = json.loads(str(conversation["attachment_refs_json"] or "[]"))
+        refs = payload if isinstance(payload, list) else []
+    except (KeyError, TypeError, ValueError):
+        refs = []
+    rows = []
+    seen: set[str] = set()
+    for item in refs:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        attachment_id = str(item["id"])
+        if attachment_id in seen:
+            continue
+        row = db.get_attachment(user_id, attachment_id)
+        if row is not None and str(row["session_id"]) == str(session_id):
+            rows.append(row)
+            seen.add(attachment_id)
+    return rows
 
 # 메모리 응답(참조)
 def memory_response(row) -> MemoryResponse:
@@ -702,6 +728,9 @@ async def _create_chat_response(
 ) -> ChatResponse:
     if payload.model_key and payload.persona == "emotional_companion":
         raise HTTPException(status_code=422, detail="정서적 동반자는 전용 모델을 사용합니다.")
+    effective_model_key = payload.model_key
+    if payload.persona != "emotional_companion" and not effective_model_key:
+        effective_model_key = request.app.state.model_manager.preferred_model(user.id)
     try:
         if payload.persona == "emotional_companion":
             await request.app.state.model_manager.ensure_companion_model()
@@ -710,8 +739,8 @@ async def _create_chat_response(
                 user.id,
                 request.app.state.settings.llm_companion_model,
             )
-        elif payload.model_key:
-            await request.app.state.model_manager.ensure_user_model(user.id, payload.model_key)
+        elif effective_model_key:
+            await request.app.state.model_manager.ensure_user_model(user.id, effective_model_key)
     except ModelManagerConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelManagerError as exc:
@@ -746,7 +775,7 @@ async def _create_chat_response(
         memory_engine=engine,
         document_engine=request.app.state.document_engine,
         web_search_engine=request.app.state.web_search_engine,
-        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
+        model_override=effective_model_key if payload.persona != "emotional_companion" else None,
     )
     memories = agent_context.memories
     document_context = agent_context.document_context
@@ -759,7 +788,7 @@ async def _create_chat_response(
             web_context=web_context,
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
-            model_override=payload.model_key if payload.persona != "emotional_companion" else None,
+            model_override=effective_model_key if payload.persona != "emotional_companion" else None,
             max_answer_chars=200 if payload.speak else None,
             on_delta=on_delta,
         )
@@ -768,7 +797,7 @@ async def _create_chat_response(
     character_cue = await pipeline.generate_character_cue(
         answer,
         persona=payload.persona,
-        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
+        model_override=effective_model_key if payload.persona != "emotional_companion" else None,
     )
     if pipeline_operation is not None:
         await pipeline_operation.complete_stage()
@@ -969,6 +998,9 @@ async def regenerate_message(
     )
     if payload.model_key and payload.persona == "emotional_companion":
         raise HTTPException(status_code=422, detail="정서적 동반자는 전용 모델을 사용합니다.")
+    effective_model_key = payload.model_key
+    if payload.persona != "emotional_companion" and not effective_model_key:
+        effective_model_key = request.app.state.model_manager.preferred_model(user.id)
     try:
         if payload.persona == "emotional_companion":
             await request.app.state.model_manager.ensure_companion_model()
@@ -977,8 +1009,8 @@ async def regenerate_message(
                 user.id,
                 request.app.state.settings.llm_companion_model,
             )
-        elif payload.model_key:
-            await request.app.state.model_manager.ensure_user_model(user.id, payload.model_key)
+        elif effective_model_key:
+            await request.app.state.model_manager.ensure_user_model(user.id, effective_model_key)
     except ModelManagerConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelManagerError as exc:
@@ -995,7 +1027,9 @@ async def regenerate_message(
     session = db.get_session(user.id, conversation["session_id"])
     if session is None:
         raise HTTPException(status_code=404, detail="대화 세션을 찾을 수 없습니다.")
-    request_attachment_rows = list(db.list_attachments(user.id, session["id"]))
+    request_attachment_rows = conversation_attachment_rows(
+        db, user.id, session["id"], conversation,
+    )
     request_attachment_ids = [str(row["id"]) for row in request_attachment_rows]
     history_rows = db.get_history_before(user.id, session["id"], conversation["created_at"], limit=10)
     session_context = session_working_context(history_rows)
@@ -1009,10 +1043,15 @@ async def regenerate_message(
         memory_engine=request.app.state.memory_engine,
         document_engine=request.app.state.document_engine,
         web_search_engine=request.app.state.web_search_engine,
-        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
+        model_override=effective_model_key if payload.persona != "emotional_companion" else None,
     )
     memories = agent_context.memories
-    document_context = agent_context.document_context
+    exact_document_context = request.app.state.document_engine.context_from_rows(
+        request_attachment_rows, conversation["user_text"],
+    )
+    # Regeneration must use the files stored on the original message even
+    # after their one-time active state has been consumed.
+    document_context = exact_document_context or agent_context.document_context
     web_context = agent_context.web_context
     try:
         answer = await pipeline.generate(
@@ -1022,7 +1061,7 @@ async def regenerate_message(
             web_context=web_context,
             thinking_mode=payload.thinking_mode,
             reasoning_effort=payload.reasoning_effort,
-            model_override=payload.model_key if payload.persona != "emotional_companion" else None,
+            model_override=effective_model_key if payload.persona != "emotional_companion" else None,
             max_answer_chars=200 if payload.speak else None,
         )
     except PipelineUnavailable as exc:
@@ -1030,7 +1069,7 @@ async def regenerate_message(
     character_cue = await pipeline.generate_character_cue(
         answer,
         persona=payload.persona,
-        model_override=payload.model_key if payload.persona != "emotional_companion" else None,
+        model_override=effective_model_key if payload.persona != "emotional_companion" else None,
     )
     await operation.complete_stage()
     audio_url = (
@@ -1103,7 +1142,7 @@ async def synthesize_message_audio(
             and not db.user_has_voice(user.id, payload.voice_id)
         ):
             raise HTTPException(status_code=403, detail="이 계정에서 사용할 수 없는 개인화 음성입니다.")
-        if conversation["output_audio_path"]:
+        if conversation["output_audio_path"] and not payload.force:
             await operation.complete_stage()
             return message_response(
                 conversation,
@@ -1122,6 +1161,7 @@ async def synthesize_message_audio(
         try:
             updated = db.update_conversation_audio_if_current(
                 user.id, message_id, assistant_text, audio_url,
+                replace_existing=payload.force,
                 expected_auth_version=user.auth_version,
             )
         except AccountAccessFenceError as exc:

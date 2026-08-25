@@ -151,8 +151,20 @@ def test_allowlisted_admin_receives_only_privacy_safe_operational_data(tmp_path)
         assert filtered_users.status_code == 200
         assert filtered_users.json()["items"]
 
+        app.state.db.begin_operation(
+            "ai_pipeline",
+            "pipeline-admin-list-test",
+            "pipeline-admin-list-correlation",
+            user_id=registered["user"]["id"],
+            resource_id="LLM -> TTS",
+            status="succeeded",
+        )
         operations = client.get("/v1/admin/operations", headers=headers)
         assert operations.status_code == 200
+        assert any(
+            item["resource_id"] == "LLM -> TTS"
+            for item in operations.json()["items"]
+        )
         operation = operations.json()["items"][0]
         transitions = client.get(
             f"/v1/admin/operations/{operation['id']}/transitions", headers=headers,

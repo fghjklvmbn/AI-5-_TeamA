@@ -283,6 +283,9 @@ function MemoryPalApp({ darkMode, onDarkModeChange }: { darkMode: boolean; onDar
               characterId={characterId}
               onConversationModeChange={updateConversationMode}
               onCharacterChange={updateCharacter}
+              onPersonaChange={updatePersona}
+              onModelKeyChange={updateSelectedModel}
+              onVoiceIdChange={setVoiceId}
               incomingMessage={incomingMessage}
               onIncomingMessageConsumed={consumeIncomingMessage}
               onSessionChange={updateConversation}

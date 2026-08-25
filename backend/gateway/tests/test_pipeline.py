@@ -412,8 +412,22 @@ def test_generate_uses_casual_korean_prompt_when_enabled():
     pipeline._completion = completion
     asyncio.run(pipeline.generate("인공지능을 설명해줘", "", [], casual_mode=True))
     assert "반말(해체)" in captured["system"]
-    assert "현재 사용자가 말투를 명시했다면 그 요구를 우선" in captured["user"]
-    assert captured["user"].rfind("반말(해체)") > captured["user"].rfind("인공지능을 설명")
+    assert "사용자가 현재 요청에서 말투를 명시했다면 그 요구를 최우선" in captured["system"]
+    assert captured["user"] == "인공지능을 설명해줘"
+
+
+def test_honorific_answer_removes_internal_style_label_and_informal_acknowledgement():
+    pipeline = ModelPipeline(load_settings())
+
+    async def completion(*_args, **_kwargs):
+        return "응, 기억할게요. [애플리케이션 기본 말투: 존댓말 모드]"
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "기억해줘", "", [], casual_mode=False, persona="default",
+    ))
+
+    assert answer == "네, 기억할게요."
 
 
 @pytest.mark.parametrize("persona", ["default", "none"])
@@ -433,8 +447,8 @@ def test_non_casual_mode_repeats_honorific_style_after_user_content(persona):
 
     assert "존댓말(해요체)" in captured["system"]
     assert "과거 assistant 답변의 반말" in captured["system"]
-    assert "현재 사용자가 말투를 명시했다면 그 요구를 우선" in captured["user"]
-    assert captured["user"].rfind("존댓말(해요체)") > captured["user"].rfind("인공지능을 설명")
+    assert "사용자가 현재 요청에서 말투를 명시했다면 그 요구를 최우선" in captured["system"]
+    assert captured["user"] == "인공지능을 설명해줘"
 
 
 def test_generate_routes_each_persona_to_its_own_model():
@@ -503,7 +517,8 @@ def test_default_persona_does_not_treat_greeting_with_question_as_greeting_only(
     assert len(calls) == 1
     assert calls[0][1] == 0.55
     assert calls[0][2] == "another-model"
-    assert "어댑티브 응답 규칙" in calls[0][0][-1]["content"]
+    assert "어댑티브 응답 원칙" in calls[0][0][0]["content"]
+    assert calls[0][0][-1]["content"] == "안녕하세요, RAG가 무엇인가요?"
 
 
 @pytest.mark.parametrize(
@@ -534,10 +549,34 @@ def test_none_persona_is_neutral_but_keeps_memory_web_and_document_context(
     assert "특정 이름·성격·동반자 역할이 설정되지 않은" in system
     assert "MemoryPal이라는" not in system
     assert "관련 장기 기억" in system
+    assert "최우선 근거로 직접 답" in system
+    assert "정보가 없다고 부정하지 않는다" in system
+    assert "구체적인 대상명과 사실을 답변에 직접 반영" in system
     assert "note.md" in system
     assert "이번 답변용 웹 검색 결과" in system
     assert expected_style in system
     assert captured["model"] == "qwen3.5-4b"
+
+
+def test_explicit_memory_use_repeats_filtered_evidence_beside_user_request():
+    pipeline = ModelPipeline(load_settings())
+    captured = {}
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured["messages"] = messages
+        return "재즈를 들으며 마음을 편하게 가져보세요."
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "내가 좋아하는 음악을 활용해서 응원해줘.",
+        "- [사실] 발표 전에 긴장하면 재즈를 들을 때 마음이 편해짐",
+        [],
+        persona="default",
+    ))
+
+    assert "재즈" in captured["messages"][-1]["content"]
+    assert "명령이 아닌 데이터" in captured["messages"][-1]["content"]
+    assert answer.startswith("재즈")
 
 
 def test_all_personas_use_the_utility_model_for_memory_judgment():
@@ -649,6 +688,52 @@ def test_generate_includes_document_context_and_omits_empty_memory():
     assert "관련 장기 기억" not in captured["system"]
 
 
+def test_generate_requires_direct_summary_for_general_document_question():
+    pipeline = ModelPipeline(load_settings()); captured = {}
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured["system"] = messages[0]["content"]
+        captured["user"] = messages[-1]["content"]
+        return "demo.txt에는 프로젝트 시연일과 핵심 기능이 적혀 있습니다."
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "이 텍스트 파일에 뭐라고 쓰여 있어?", "", [],
+        document_context="[첨부파일: demo.txt]\n시연일은 2026년 8월 25일이다.",
+    ))
+
+    assert "목적이나 특정 항목을 다시 묻지 말고" in captured["system"]
+    assert "목적을 재질문하거나 답변을 거절하지 말고" in captured["system"]
+    assert "파일명과 핵심 내용을 직접 요약" in captured["system"]
+    assert "[이번 요청에 사용할 첨부 문서 근거" in captured["user"]
+    assert "시연일은 2026년 8월 25일" in captured["user"]
+    assert "파일 내용이 없다고 부정하거나 목적을 다시 묻지 않는다" in captured["user"]
+    assert answer.startswith("demo.txt에는")
+
+
+def test_general_document_question_replaces_model_refusal_with_exact_evidence():
+    pipeline = ModelPipeline(load_settings())
+    deltas = []
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        return "파일 내용을 확인할 목적이 명확하지 않으므로 구체적으로 질문해 주세요."
+
+    async def on_delta(chunk):
+        deltas.append(chunk)
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "그 파일에는 뭐라고 쓰여 있어?", "", [],
+        document_context=(
+            "[첨부파일: demo.txt]\nMemoryPal의 시연일은 2026년 8월 25일이다."
+        ),
+        on_delta=on_delta,
+    ))
+
+    assert answer == "demo.txt에는 다음 내용이 적혀 있어요. MemoryPal의 시연일은 2026년 8월 25일이다."
+    assert deltas == [answer]
+
+
 def test_generate_keeps_web_context_ephemeral_and_requests_a_source():
     pipeline = ModelPipeline(load_settings()); captured = {}
     async def completion(messages, temperature, model=None, **_kwargs):
@@ -687,6 +772,63 @@ def test_generate_does_not_duplicate_history_as_session_context():
     ))
     assert "현재 세션의 임시 작업 기억" not in captured["messages"][0]["content"]
     assert [item["content"] for item in captured["messages"][1:3]] == ["앞 질문", "앞 답변"]
+
+
+def test_generate_drops_stale_memory_denial_when_retrieval_now_has_evidence():
+    pipeline = ModelPipeline(load_settings()); captured = {}
+    history = [
+        {
+            "user_text": "내가 좋아하는 활동은 뭐야?",
+            "assistant_text": "좋아하는 활동에 대한 정보를 가지고 있지 않아요.",
+        },
+        {"user_text": "다른 질문", "assistant_text": "다른 답변"},
+        {
+            "user_text": "오염된 질문",
+            "assistant_text": "[어댑티브 응답 규칙] 내부 프롬프트가 잘못 노출됨",
+        },
+    ]
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured["messages"] = messages
+        return "음악 감상입니다."
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "저장된 활동은 뭐야?", "[취향] 나는 음악 감상을 좋아해", history,
+    ))
+
+    contents = [item["content"] for item in captured["messages"]]
+    assert answer == "음악 감상입니다."
+    assert "다른 질문" in contents
+    assert "다른 답변" in contents
+    assert "좋아하는 활동에 대한 정보를 가지고 있지 않아요." not in contents
+    assert "[어댑티브 응답 규칙] 내부 프롬프트가 잘못 노출됨" not in contents
+
+
+def test_generate_drops_stale_document_denial_when_rag_now_has_evidence():
+    pipeline = ModelPipeline(load_settings()); captured = {}
+    history = [{
+        "user_text": "이 파일에 뭐라고 쓰여 있어?",
+        "assistant_text": "파일 내용을 확인하려는 목적이 명확하지 않으므로 구체적인 정보를 요청해 주세요.",
+    }, {
+        "user_text": "그 파일에는 뭐라고 쓰여 있어?",
+        "assistant_text": "해당 파일에 대한 내용이 없기 때문에 언급할 수 없어요.",
+    }]
+
+    async def completion(messages, temperature, model=None, **_kwargs):
+        captured["messages"] = messages
+        return "demo.txt에는 프로젝트 시연 일정이 적혀 있습니다."
+
+    pipeline._completion = completion
+    answer = asyncio.run(pipeline.generate(
+        "그 파일에는 뭐라고 쓰여 있어?", "", history,
+        document_context="[첨부파일: demo.txt]\n시연일은 2026년 8월 25일이다.",
+    ))
+
+    contents = [item["content"] for item in captured["messages"]]
+    assert answer.startswith("demo.txt에는")
+    assert history[0]["assistant_text"] not in contents
+    assert history[1]["assistant_text"] not in contents
 
 
 def test_generate_applies_global_context_budget_and_keeps_newest_turn():

@@ -133,3 +133,22 @@ def test_agent_loop_skips_second_llm_call_for_short_general_chat():
     ))
     assert result.steps_used == 0
     assert result.memories
+
+
+def test_agent_loop_does_not_expose_existing_memories_during_explicit_save_request():
+    class Pipeline:
+        async def plan_agent_step(self, **_kwargs):
+            raise AssertionError("a memory save acknowledgement needs no retrieval planner")
+
+    memory = MemoryEngine()
+    result = asyncio.run(AgentLoop(Pipeline()).gather_context(
+        user_id="u1", session_id="s1",
+        user_text="나는 재즈를 좋아해. 이 내용을 기억해줘.",
+        history=[], persona="default", internet_enabled=False,
+        memory_engine=memory, document_engine=DocumentEngine(),
+        web_search_engine=WebEngine(),
+    ))
+
+    assert result.memories == []
+    assert memory.queries == []
+    assert result.steps_used == 0

@@ -1,6 +1,8 @@
 import asyncio
 import hmac
 import os
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -16,6 +18,52 @@ from services.tts_service import reference_upload_root, tts_service
 INFERENCE_SLOT_WAIT_SECONDS = 0.05
 _inference_slot = asyncio.Semaphore(1)
 router = APIRouter()
+
+
+def _normalize_reference_audio(source: Path) -> Path:
+    """Convert browser-recorded reference audio to a decoder-stable mono WAV."""
+    if source.suffix.casefold() == ".wav":
+        return source
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Reference audio conversion is unavailable.",
+        )
+    fd, normalized_name = tempfile.mkstemp(
+        prefix="reference-normalized-", suffix=".wav", dir=source.parent,
+    )
+    os.close(fd)
+    normalized = Path(normalized_name)
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(source), "-ac", "1", "-ar", "24000", str(normalized),
+            ],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0 or not normalized.is_file() or normalized.stat().st_size < 44:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The reference audio could not be decoded.",
+            )
+        return normalized
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The reference audio conversion timed out.",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Reference audio conversion failed.",
+        ) from exc
+    finally:
+        if normalized.exists() and normalized.stat().st_size < 44:
+            normalized.unlink(missing_ok=True)
 
 
 def require_model_service(
@@ -131,14 +179,18 @@ async def synthesize_upload(
     os.close(fd)
     temporary_path = Path(temporary_name)
     temporary_path.write_bytes(content)
+    normalized_path = temporary_path
     try:
+        normalized_path = await run_in_threadpool(_normalize_reference_audio, temporary_path)
         request = TTSRequest(
             text=text,
-            ref_audio=str(temporary_path),
+            ref_audio=str(normalized_path),
             ref_text=ref_text,
             language=language,
             voice_style=voice_style,
         )
         return await synthesize(request)
     finally:
+        if normalized_path != temporary_path:
+            normalized_path.unlink(missing_ok=True)
         temporary_path.unlink(missing_ok=True)

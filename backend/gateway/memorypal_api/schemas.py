@@ -124,6 +124,7 @@ class ModelReasoningCapabilitiesResponse(BaseModel):
 
 class MessageAudioRequest(BaseModel):
     voice_id: str | None = Field(default=None, max_length=128)
+    force: bool = False
 
 
 class CharacterCue(BaseModel):

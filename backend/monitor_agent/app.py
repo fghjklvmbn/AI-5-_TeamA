@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from urllib.parse import urlsplit
 
 import psutil
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -87,6 +88,34 @@ class HardwareSampler:
 
     def _candidate_processes(self) -> list[psutil.Process]:
         processes: dict[int, psutil.Process] = {}
+        # A Windows Python launcher or a service-only restart can make the PID
+        # captured at monitor startup stale while the service is still healthy.
+        # For a loopback health URL, the listening socket is the authoritative
+        # process identity and lets the monitor rebind without a false RED.
+        parsed = urlsplit(HEALTH_URL) if HEALTH_URL else None
+        if parsed and parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            try:
+                listeners = psutil.net_connections(kind="inet")
+            except (psutil.Error, OSError):
+                listeners = []
+            for connection in listeners:
+                if (
+                    connection.status != psutil.CONN_LISTEN
+                    or not connection.pid
+                    or not connection.laddr
+                    or connection.laddr.port != port
+                ):
+                    continue
+                try:
+                    root = psutil.Process(connection.pid)
+                    processes[root.pid] = root
+                    for child in root.children(recursive=True):
+                        processes[child.pid] = child
+                except (psutil.Error, OSError):
+                    continue
+            if processes:
+                return list(processes.values())
         if TARGET_PID:
             try:
                 root = psutil.Process(TARGET_PID)

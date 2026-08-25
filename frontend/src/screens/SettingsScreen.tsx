@@ -363,7 +363,7 @@ export function SettingsScreen({
         <Text style={styles.switchDescription}>채팅 화면을 열 때 사용할 기본 탭을 선택하세요.</Text>
         <View style={styles.modeChoices}>
           {([
-            { id: 'live', icon: '◉', label: '실시간', detail: '음성 전용' },
+            { id: 'live', icon: '◉', label: '캐릭터', detail: '음성 전용' },
             { id: 'chat', icon: '≡', label: '채팅', detail: '기존 방식' },
             { id: 'hybrid', icon: '◫', label: '하이브리드', detail: '캐릭터 + 채팅' },
           ] as const).map((option) => <Pressable

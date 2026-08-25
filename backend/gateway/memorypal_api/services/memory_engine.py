@@ -297,6 +297,19 @@ class MemoryEngine:
         )
         return matches >= min(2, len(candidate_tokens))
 
+    @staticmethod
+    def _is_declarative_memory_evidence(text: str) -> bool:
+        """Exclude recall/questions from evidence used for automatic promotion."""
+        value = str(text or "").strip()
+        if not value or re.search(r"[?？]", value):
+            return False
+        return re.search(
+            r"(?:뭐|무엇|어떤|언제|어디|누구|알려\s*(?:줘|주세요)|"
+            r"기억(?:해|나|나요|합니까|하세요|하고))",
+            value,
+            re.IGNORECASE,
+        ) is None
+
     def automatic_long_term_candidates(
         self,
         user_id: str,
@@ -307,9 +320,11 @@ class MemoryEngine:
         """Promote only strong, stable evidence repeated across separate sessions."""
         sessions = self.db.list_sessions(user_id)[:max_sessions]
         transcripts = {
-            str(session["id"]): [str(row["user_text"] or "") for row in self.db.get_all_history(
-                user_id, str(session["id"]),
-            )]
+            str(session["id"]): [
+                text for row in self.db.get_all_history(user_id, str(session["id"]))
+                if (text := str(row["user_text"] or ""))
+                and self._is_declarative_memory_evidence(text)
+            ]
             for session in sessions
         }
         promoted: list[MemoryCandidate] = []
@@ -425,7 +440,17 @@ class MemoryEngine:
             if eligible:
                 eligible_rows.append((score(row, relevance_score), row))
         eligible_rows.sort(key=lambda item: item[0], reverse=True)
-        effective_limit = min(limit, 2) if recall_requested and not hinted_types else min(limit, 3)
+        if recall_requested and hinted_types:
+            # A question such as "내가 좋아한다고 기억한 활동은 뭐야?" names
+            # the memory category without repeating the stored subject.  Keep
+            # the complete, bounded category set so an older preference is not
+            # discarded merely because several newer preferences exist.  The
+            # semantic layer can still rank the most relevant item first.
+            effective_limit = min(limit, 6)
+        elif recall_requested:
+            effective_limit = min(limit, 2)
+        else:
+            effective_limit = min(limit, 3)
         selected = [row for _, row in eligible_rows[:effective_limit]]
         self.db.touch_memories(user_id, [row["id"] for row in selected])
         return selected

@@ -1319,15 +1319,17 @@ class Database:
     def update_conversation_audio_if_current(
         self, user_id: str, conversation_id: str, assistant_text: str,
         output_audio_path: str,
+        replace_existing: bool = False,
         expected_auth_version: int | None = None,
     ) -> sqlite3.Row | None:
         """Attach audio only when the synthesized answer is still current."""
         with self.transaction() as db:
             if expected_auth_version is not None:
                 self._require_account_fence(db, user_id, expected_auth_version)
+            audio_guard = "" if replace_existing else " AND output_audio_path IS NULL"
             updated = db.execute(
                 "UPDATE conversations SET output_audio_path = ? "
-                "WHERE id = ? AND user_id = ? AND assistant_text = ? AND output_audio_path IS NULL",
+                f"WHERE id = ? AND user_id = ? AND assistant_text = ?{audio_guard}",
                 (output_audio_path, conversation_id, user_id, assistant_text),
             ).rowcount
             conversation = db.execute(
@@ -2634,7 +2636,7 @@ class Database:
         params.append(max(1, min(200, limit)))
         return self.fetch_all(
             "SELECT o.id, u.admin_ref AS user_id, o.request_id, o.correlation_id, "
-            "o.operation_type, o.status, o.progress_percent, o.version, o.error_code, "
+            "o.operation_type, o.resource_id, o.status, o.progress_percent, o.version, o.error_code, "
             "o.created_at, o.updated_at, o.started_at, o.completed_at "
             "FROM operation_states o LEFT JOIN users u ON u.id = o.user_id"
             f"{where} ORDER BY o.updated_at DESC, o.id DESC LIMIT ?",
